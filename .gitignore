@@ -5,3 +5,4 @@ __pycache__/
 .xane_indicator
 vector_store.index
 chunk_metadata.pkl
+tests/
