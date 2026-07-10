@@ -1,7 +1,11 @@
 from app.routing.router import Route
 from app.generation.answer_extractor import AnswerExtractor
 from app.generation.llm_generator import LLMGenerator
-from app.generation.gemini_budget import GeminiDailyBudget
+
+from app.generation.redis_semantic_cache import RedisSemanticCache
+from app.embedding.embedder import Embedder
+
+from app.generation.llm_provider_manager import ProviderExhausted
 
 class ResponseExecutor:
     """
@@ -9,10 +13,12 @@ class ResponseExecutor:
     the final answer. Does NOT decide the route — only executes it.
     """
 
-    def __init__(self):
+    def __init__(self, embedder):
         self.extractor = AnswerExtractor()
         self.llm = LLMGenerator()
-        self.gemini_budget = GeminiDailyBudget(daily_limit=18)  # small buffer below the real 20
+        
+        self.semantic_cache = RedisSemanticCache(embedder=embedder, similarity_threshold=0.82)
+        
 
     def execute(self, route: Route, query: str, results: list) -> dict:
         top_chunk = results[0]["chunk"] if results else None
@@ -34,22 +40,57 @@ class ResponseExecutor:
                 "distance": top_distance
             }
 
+        # if route == Route.LLM:
+        #      # 1. Check semantic cache first — free, instant, no Gemini needed
+        #     cached_answer = self.semantic_cache.get(query, cache_type=RedisSemanticCache.EDUCATION)
+        #     if cached_answer:
+        #         return {
+        #             "answer": cached_answer,
+        #             "tier": "llm_cached",
+        #             "sources": [r["chunk"].source for r in results],
+        #             "distance": top_distance
+        #         }
+        # changes
         if route == Route.LLM:
             chunks = [r["chunk"] for r in results]
-            if not self.gemini_budget.can_call():
+            try:
+                answer_text = self.llm.generate(query, chunks)
+                self.semantic_cache.set(query, answer_text, cache_type=RedisSemanticCache.EDUCATION)
                 return {
-                    "answer": "I'm currently experiencing high demand and can't generate a detailed answer right now. Here's what I know: " + top_chunk.content[:200],
-                    "tier": "budget_exceeded",
-                
+                    "answer": answer_text,
+                    "tier": "llm_generated",
+                    "sources": [c.source for c in chunks],
+                    "distance": top_distance
                 }
-            self.gemini_budget.record_call()
-            answer_text = self.llm.generate(query, chunks)
-            return {
-                "answer": answer_text,
-                "tier": "llm_generated",
-                "sources": [c.source for c in chunks],
-                "distance": top_distance
-            }
+            except RuntimeError as e:
+                return {
+                    "answer": str(e).replace("All LLM providers exhausted: ", ""),
+                    "tier": "llm_failed",
+                    "source": top_chunk.source if top_chunk else None,
+                    "distance": top_distance
+                }
+
+
+          
+            chunks = [r["chunk"] for r in results]
+            try:
+                answer_text = self.llm.generate(query, chunks)
+                self.semantic_cache.set(query, answer_text, cache_type=RedisSemanticCache.EDUCATION)  # save for next time
+                return {
+                    "answer": answer_text,
+                    "tier": "llm_generated",
+                    "sources": [c.source for c in chunks],
+                    "distance": top_distance
+                }
+            except RuntimeError as e:
+                return {
+                    "answer": str(e).replace("All LLM providers exhausted: ", ""),
+                    "tier": "llm_failed",
+                    "source": top_chunk.source if top_chunk else None,
+                    "distance": top_distance
+                }
+
+
 
         # Route.FALLBACK
         return {

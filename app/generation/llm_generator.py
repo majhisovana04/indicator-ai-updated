@@ -1,25 +1,21 @@
-import os
-from dotenv import load_dotenv
-from google import genai
+# app/generation/llm_generator.py
 from app.models.chunk import Chunk
-
-load_dotenv()
+from app.generation.llm_provider_manager import LLMProviderManager, ProviderExhausted
 
 
 class LLMGenerator:
     """
-    Generates answers using Gemini, grounded in retrieved chunks.
+    Generates answers using the LLM Provider Manager.
+    Automatically falls back across Gemini -> Groq -> OpenRouter -> Cerebras.
     """
 
-    def __init__(self, model: str = "gemini-flash-latest"):
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        self.model = model
+    def __init__(self):
+        self.manager = LLMProviderManager()
 
     def build_prompt(self, query: str, chunks: list[Chunk]) -> str:
         context_text = "\n\n---\n\n".join(
             f"[Source: {c.source}]\n{c.content}" for c in chunks
         )
-
         return f"""You are an assistant that explains trading indicators to beginners.
 
 Rules:
@@ -36,10 +32,16 @@ USER QUESTION:
 
 ANSWER:"""
 
+    def generate_from_prompt(self, prompt: str) -> str:
+        """
+        General-purpose method: takes ANY prompt, returns LLM text response.
+        Automatically tries all providers in order. Raises RuntimeError if all fail.
+        """
+        try:
+            return self.manager.generate(prompt)
+        except ProviderExhausted as e:
+            raise RuntimeError(f"All LLM providers exhausted: {e}")
+
     def generate(self, query: str, chunks: list[Chunk]) -> str:
         prompt = self.build_prompt(query, chunks)
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt
-        )
-        return response.text.strip()
+        return self.generate_from_prompt(prompt)

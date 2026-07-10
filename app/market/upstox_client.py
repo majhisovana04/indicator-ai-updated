@@ -1,21 +1,52 @@
+# app/market/upstox_client.py
+import os
+import requests
 import pandas as pd
-import random
+from datetime import datetime, timedelta
+from app.market.instrument_mapper import InstrumentMapper
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 
 class UpstoxClient:
     """
-    Fetches OHLC price data for a company.
-    Currently returns DUMMY data for development.
-    Swap fetch_ohlc() internals with real Upstox API calls later —
-    the return shape (a DataFrame with a 'close' column) stays the same.
+    Fetches REAL historical OHLC data from Upstox's V3 Historical Candle API.
+    Returns a DataFrame with 'close' and 'volume' columns.
     """
 
-    def fetch_ohlc(self, symbol: str, days: int = 60) -> pd.DataFrame:
-        # DUMMY: random walk price data, just for testing the pipeline
-        base_price = random.uniform(100, 2000)
-        prices = [base_price]
-        for _ in range(days - 1):
-            change = random.uniform(-0.03, 0.03)
-            prices.append(prices[-1] * (1 + change))
+    BASE_URL = "https://api.upstox.com/v3/historical-candle"
 
-        return pd.DataFrame({"close": prices})
+    def __init__(self):
+        self.access_token = os.getenv("UPSTOX_ACCESS_TOKEN")
+        if not self.access_token:
+            raise ValueError("UPSTOX_ACCESS_TOKEN not found in environment")
+        self.mapper = InstrumentMapper()
+
+    def fetch_ohlc(self, symbol: str, days: int = 60) -> pd.DataFrame:
+        instrument_key = self.mapper.get_instrument_key(symbol)
+
+        to_date = datetime.now().strftime("%Y-%m-%d")
+        from_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+
+        url = f"{self.BASE_URL}/{instrument_key}/days/1/{to_date}/{from_date}"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.access_token}"
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        candles = data["data"]["candles"]
+        if not candles:
+            raise ValueError(f"No candle data returned for {symbol}")
+
+        # Each candle: [timestamp, open, high, low, close, volume, oi]
+        # Upstox returns newest-first — reverse to chronological order
+        candles = list(reversed(candles))
+        closes = [c[4] for c in candles]
+        volumes = [c[5] for c in candles]
+
+        return pd.DataFrame({"close": closes, "volume": volumes})

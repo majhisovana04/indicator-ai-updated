@@ -34,8 +34,14 @@ Rules:
 - End with: "This reflects technical indicator signals as of {timestamp}, not investment advice. Please do your own research or consult a registered advisor."
 - Keep it concise and beginner-friendly.
 """
-        response = self.llm.client.models.generate_content(
-            model=self.llm.model,
-            contents=prompt
-        )
-        return response.text.strip()
+        try:
+            return self.llm.generate_from_prompt(prompt)  # now uses shared retry logic
+        except RuntimeError:
+            # Retry+backoff already happened inside llm_generator's underlying
+            # calls where used elsewhere; this is a final safety net for the
+            # direct client call here. Never let this crash the scheduler.
+            return (
+                f"As of {timestamp}, market sentiment appears {sentiment}, but a "
+                f"detailed summary could not be generated right now due to a "
+                f"temporary service issue. Please check back shortly."
+            )

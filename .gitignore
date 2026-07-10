@@ -6,3 +6,4 @@ __pycache__/
 vector_store.index
 chunk_metadata.pkl
 tests/
+app_activity.log

@@ -10,19 +10,14 @@ class Intent(Enum):
     LIVE_SCREENING = "live_screening"
 
 
-# SCREENING_KEYWORDS = [
-#     "suggest", "best stock", "best compan", "which stock", "buy today",
-#     "bullish", "bearish", "market today", "top pick", "recommend"
-# ]
-
-# Representative example phrases — doesn't need to be exhaustive,
-# semantic similarity generalizes to paraphrases automatically.
 SCREENING_EXAMPLES = [
     "which companies should I look at today",
     "suggest some good stocks right now",
     "what's the market sentiment today",
     "is the market bullish or bearish today",
     "give me some stock picks",
+    "what are today's top picks",  
+    "which stocks are bullish today",
     "what should I invest in today",
     "top stocks to watch today",
     "which stocks look strong right now",
@@ -49,6 +44,20 @@ class IntentClassifier:
         )
         best_sim = np.max(sims)
 
+        if best_sim >= self.threshold:
+            return Intent.LIVE_SCREENING
+        return Intent.EDUCATION
+
+    def classify_with_vec(self, query_vec) -> Intent:
+        """
+        Same logic as classify() but accepts a pre-computed embedding vector.
+        Use this when the query has already been embedded upstream
+        to avoid embedding twice.
+        """
+        sims = np.dot(self.example_vectors, query_vec) / (
+            np.linalg.norm(self.example_vectors, axis=1) * np.linalg.norm(query_vec)
+        )
+        best_sim = np.max(sims)
         if best_sim >= self.threshold:
             return Intent.LIVE_SCREENING
         return Intent.EDUCATION
