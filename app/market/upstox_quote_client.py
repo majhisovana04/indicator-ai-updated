@@ -3,7 +3,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
 import requests
 from app.market.instrument_mapper import InstrumentMapper
 
