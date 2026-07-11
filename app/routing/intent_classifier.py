@@ -29,10 +29,15 @@ SCREENING_EXAMPLES = [
 
 
 class IntentClassifier:
-    def __init__(self, embedder=None,  threshold: float = 0.75):
-        self.embedder = embedder or Embedder() 
+    # app/routing/intent_classifier.py
+    def __init__(self, embedder=None, threshold: float = 0.75):
+        self.embedder = embedder or Embedder()
         self.threshold = threshold
-        self.example_vectors = self.embedder.model.encode(SCREENING_EXAMPLES)
+        # Use the public embed_chunks-equivalent — embed each example via embed_query,
+        # since Embedder no longer exposes a raw .model.encode() method
+        self.example_vectors = np.array([
+            self.embedder.embed_query(example)[0] for example in SCREENING_EXAMPLES
+        ])
 
     def classify(self, query: str) -> Intent:
         query_vec = self.embedder.embed_query(query)[0]
