@@ -1,3 +1,4 @@
+# app/generation/response_executor.py
 from app.routing.router import Route
 from app.generation.answer_extractor import AnswerExtractor
 from app.generation.llm_generator import LLMGenerator
@@ -39,17 +40,6 @@ class ResponseExecutor:
                 "source": top_chunk.source,
                 "distance": top_distance
             }
-
-        # if route == Route.LLM:
-        #      # 1. Check semantic cache first — free, instant, no Gemini needed
-        #     cached_answer = self.semantic_cache.get(query, cache_type=RedisSemanticCache.EDUCATION)
-        #     if cached_answer:
-        #         return {
-        #             "answer": cached_answer,
-        #             "tier": "llm_cached",
-        #             "sources": [r["chunk"].source for r in results],
-        #             "distance": top_distance
-        #         }
         # changes
         if route == Route.LLM:
             chunks = [r["chunk"] for r in results]
@@ -69,29 +59,6 @@ class ResponseExecutor:
                     "source": top_chunk.source if top_chunk else None,
                     "distance": top_distance
                 }
-
-
-          
-            chunks = [r["chunk"] for r in results]
-            try:
-                answer_text = self.llm.generate(query, chunks)
-                self.semantic_cache.set(query, answer_text, cache_type=RedisSemanticCache.EDUCATION)  # save for next time
-                return {
-                    "answer": answer_text,
-                    "tier": "llm_generated",
-                    "sources": [c.source for c in chunks],
-                    "distance": top_distance
-                }
-            except RuntimeError as e:
-                return {
-                    "answer": str(e).replace("All LLM providers exhausted: ", ""),
-                    "tier": "llm_failed",
-                    "source": top_chunk.source if top_chunk else None,
-                    "distance": top_distance
-                }
-
-
-
         # Route.FALLBACK
         return {
             "answer": "I don't have information on that topic yet. I can help explain the trading indicators available on this platform.",

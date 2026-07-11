@@ -1,3 +1,4 @@
+# app/embedding/embedder.py
 from sentence_transformers import SentenceTransformer
 from app.models.chunk import Chunk
 

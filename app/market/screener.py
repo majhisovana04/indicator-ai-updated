@@ -16,6 +16,11 @@ class Screener:
         try:
             data = self.client.fetch_ohlc(symbol, days=60)
             close = data["close"]
+            volume = data["volume"]
+
+            liquidity = check_liquidity(volume)
+            if not liquidity["is_liquid"]:
+                return None
 
             rsi = calculate_rsi(close)
             macd = calculate_macd(close)

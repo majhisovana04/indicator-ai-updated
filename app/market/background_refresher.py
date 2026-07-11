@@ -35,6 +35,9 @@
 #         refresh_market_analysis()
 #     except Exception as e:
 #         print(f"Initial market refresh failed (will retry on next scheduled run): {e}")
+
+# app/market/background_refresher.py
+
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger

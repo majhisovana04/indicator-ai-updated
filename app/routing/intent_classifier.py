@@ -30,7 +30,6 @@ SCREENING_EXAMPLES = [
 
 class IntentClassifier:
     def __init__(self, embedder=None,  threshold: float = 0.75):
-        # self.embedder = Embedder()
         self.embedder = embedder or Embedder() 
         self.threshold = threshold
         self.example_vectors = self.embedder.model.encode(SCREENING_EXAMPLES)
