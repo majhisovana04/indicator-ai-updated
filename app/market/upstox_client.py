@@ -4,7 +4,6 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from app.market.instrument_mapper import InstrumentMapper
-import os
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -12,7 +11,8 @@ load_dotenv()
 class UpstoxClient:
     """
     Fetches REAL historical OHLC data from Upstox's V3 Historical Candle API.
-    Returns a DataFrame with 'close' and 'volume' columns.
+    Returns a DataFrame with 'high', 'low', 'close', 'volume' columns —
+    extended from close/volume-only to support ADX/ATR/VWAP.
     """
 
     BASE_URL = "https://api.upstox.com/v3/historical-candle"
@@ -46,7 +46,10 @@ class UpstoxClient:
         # Each candle: [timestamp, open, high, low, close, volume, oi]
         # Upstox returns newest-first — reverse to chronological order
         candles = list(reversed(candles))
-        closes = [c[4] for c in candles]
-        volumes = [c[5] for c in candles]
 
-        return pd.DataFrame({"close": closes, "volume": volumes})
+        return pd.DataFrame({
+            "high":   [c[2] for c in candles],
+            "low":    [c[3] for c in candles],
+            "close":  [c[4] for c in candles],
+            "volume": [c[5] for c in candles],
+        })

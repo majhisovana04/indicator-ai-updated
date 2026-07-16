@@ -8,3 +8,4 @@ chunk_metadata.pkl
 tests/
 app_activity.log
 app/embedding_with ST/
+app/embedding_withHFModel/

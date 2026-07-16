@@ -18,10 +18,10 @@ class ResponseExecutor:
         self.extractor = AnswerExtractor()
         self.llm = LLMGenerator()
         
-        self.semantic_cache = RedisSemanticCache(embedder=embedder, similarity_threshold=0.82)
+        self.semantic_cache = RedisSemanticCache(embedder=embedder, similarity_threshold=0.75)
         
 
-    def execute(self, route: Route, query: str, results: list) -> dict:
+    def execute(self, route: Route, query: str, results: list, query_vector: list = None) -> dict:
         top_chunk = results[0]["chunk"] if results else None
         top_distance = results[0]["distance"] if results else None
 
@@ -40,12 +40,14 @@ class ResponseExecutor:
                 "source": top_chunk.source,
                 "distance": top_distance
             }
-        # changes
+
         if route == Route.LLM:
             chunks = [r["chunk"] for r in results]
             try:
                 answer_text = self.llm.generate(query, chunks)
-                self.semantic_cache.set(query, answer_text, cache_type=RedisSemanticCache.EDUCATION)
+                self.semantic_cache.set(
+                    query, answer_text, cache_type=RedisSemanticCache.EDUCATION, query_vector=query_vector
+                )
                 return {
                     "answer": answer_text,
                     "tier": "llm_generated",
@@ -59,7 +61,7 @@ class ResponseExecutor:
                     "source": top_chunk.source if top_chunk else None,
                     "distance": top_distance
                 }
-        # Route.FALLBACK
+
         return {
             "answer": "I don't have information on that topic yet. I can help explain the trading indicators available on this platform.",
             "tier": "fallback",

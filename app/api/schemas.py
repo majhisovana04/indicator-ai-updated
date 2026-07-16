@@ -11,3 +11,15 @@ class ChatResponse(BaseModel):
     # tier: str
     # source: str | None = None
     # distance: float | None = None
+
+class SignalMatrixEntry(BaseModel):
+    symbol: str
+    arrows: dict[str, str]
+    ai_signal: str
+    confidence: int
+    score: int
+
+
+class SignalMatrixResponse(BaseModel):
+    count: int
+    results: list[SignalMatrixEntry]

@@ -40,3 +40,28 @@ class UpstoxQuoteClient:
             raise ValueError(f"Upstox quote fetch failed: {data}")
 
         return data["data"]
+
+    def fetch_quote_by_key(self, instrument_key: str) -> dict:
+        """
+        Fetches a quote using a raw instrument_key directly, bypassing
+        the symbol->key mapper. Needed for instruments like India VIX
+        that aren't part of the Nifty equity universe the mapper knows about.
+        """
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.access_token}"
+        }
+        params = {"instrument_key": instrument_key}
+
+        response = requests.get(self.BASE_URL, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("status") != "success":
+            raise ValueError(f"Upstox quote fetch failed: {data}")
+
+        quote_data = data["data"]
+        if not quote_data:
+            raise ValueError(f"No quote data returned for {instrument_key}")
+
+        return next(iter(quote_data.values()))

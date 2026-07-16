@@ -1,3 +1,4 @@
+# app/routing/router.py
 from enum import Enum
 
 
@@ -11,9 +12,9 @@ class Route(Enum):
     FALLBACK = "fallback"
 
 
-FAQ_THRESHOLD = 0.5
-POLICY_THRESHOLD = 1.00
-GENERAL_THRESHOLD = 1.20
+FAQ_THRESHOLD = 0.28
+POLICY_THRESHOLD = 0.50
+GENERAL_THRESHOLD = 0.60
 
 
 class Router:

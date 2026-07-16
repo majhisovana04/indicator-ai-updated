@@ -170,13 +170,9 @@ from app.routing.intent_classifier import IntentClassifier, Intent
 from app.redis_client import get_redis
 import json
 import time
-
+from app.routing.router import Route
 
 class AssistantPipeline:
-    """
-    Orchestrates the full flow: embed → cache check → intent → route → execute.
-    """
-
     def __init__(self):
         self.embedder = Embedder()
         self.store = VectorStore()
@@ -188,68 +184,66 @@ class AssistantPipeline:
     def ask(self, query: str, top_k: int = 3) -> dict:
         t0 = time.time()
 
-        # ── Step 0: Embed ONCE ──────────────────────────────────────
-        # embed_query returns shape (1, 384) — we keep both:
-        #   query_embedding : (1, 384)  → for vector search (store.search)
-        #   query_vec_1d    : (384,)    → for cosine similarity (cache + classifier)
-        query_embedding = self.embedder.embed_query(query)   # (1, 384)
-        query_vec_1d    = query_embedding[0]                 # (384,)
+        # Step 0: Embed ONCE — reused for classification + whichever cache check applies
+        query_embedding = self.embedder.embed_query(query)   # (1, 384) — for FAISS
+        query_vec_1d = query_embedding[0].tolist()             # plain list — for cosine sim + Redis storage
 
-        # ── Step 1: Check Redis cache BEFORE classification ─────────
-        # Check education cache first (most common query type)
-        cached = self.executor.semantic_cache.get(query, cache_type=RedisSemanticCache.EDUCATION)
-        if cached:
-            print(f"[Pipeline] Redis HIT (education) — skipping classification + LLM")
+        # Step: Policy check FIRST — catches guarantee/prediction/advice-seeking
+        # questions regardless of topic, BEFORE intent classification can misroute them
+        policy_results = self.store.search(query_embedding, top_k=3)
+        policy_route = self.router.decide(policy_results)
+
+        if policy_route == Route.POLICY:
+            top_chunk = policy_results[0]["chunk"]
             return {
-                "answer": cached,
-                "tier": "llm_cached",
-                "distance": None
-            }
+            "answer": self.executor.extractor.extract_answer(top_chunk),
+            "tier": "policy_direct",
+            "source": top_chunk.source,
+            "distance": policy_results[0]["distance"]
+        }
 
-        # Check market cache
-        cached = self.executor.semantic_cache.get(query, cache_type=RedisSemanticCache.MARKET)
-        if cached:
-            print(f"[Pipeline] Redis HIT (market) — skipping classification + market fetch")
-            return {
-                "answer": cached,
-                "tier": "market_cached",
-                "distance": None
-            }
-
-        # ── Step 2: Intent classification (reuse pre-computed vec) ──
+        # Step 1: Classify FIRST — free, local, zero network calls
         t1 = time.time()
         intent = self.intent_classifier.classify_with_vec(query_vec_1d)
         t2 = time.time()
-        print(f"Intent classification: {t2-t1:.2f}s (embedding reused, not re-computed)")
+        print(f"Intent classification: {t2-t1:.3f}s")
 
-        # ── Step 3a: Market / Live Screening path ───────────────────
+        # Step 2a: LIVE_SCREENING — only touch MARKET cache, never EDUCATION
         if intent == Intent.LIVE_SCREENING:
+            cached = self.executor.semantic_cache.get(
+                query, cache_type=RedisSemanticCache.MARKET, query_vector=query_vec_1d
+            )
+            if cached:
+                print(f"[Pipeline] MARKET cache HIT")
+                return {"answer": cached, "tier": "market_cached", "distance": None}
+
             r = get_redis()
             cached_market_json = r.get("market:daily_summary") if r else None
-            
+
             if cached_market_json:
                 cached_market = json.loads(cached_market_json)
-                # Redis doesn't give us easily parsed age without another command, 
-                # but we know it expires in 20 hours. For now, just serve it directly.
                 answer = cached_market["answer"]
-                
-                # Store in Redis semantic market cache (6h TTL) so next similar question is a cache hit
                 self.executor.semantic_cache.set(
-                    query, answer, cache_type=RedisSemanticCache.MARKET
+                    query, answer, cache_type=RedisSemanticCache.MARKET, query_vector=query_vec_1d
                 )
-                return {
-                    "answer": answer,
-                    "tier": "live_screening",
-                    "distance": None
-                }
+                return {"answer": answer, "tier": "live_screening", "distance": None}
+
             return {
                 "answer": "Market analysis is being prepared for the first time. Please check back in a few minutes.",
                 "tier": "live_screening_pending",
                 "distance": None
             }
 
-        # ── Step 3b: Education path — vector search + route + execute ─
+        # Step 2b: EDUCATION — only touch EDUCATION cache, never MARKET
+        cached = self.executor.semantic_cache.get(
+            query, cache_type=RedisSemanticCache.EDUCATION, query_vector=query_vec_1d
+        )
+        if cached:
+            print(f"[Pipeline] EDUCATION cache HIT — skipping FAISS + LLM")
+            return {"answer": cached, "tier": "llm_cached", "distance": None}
+
+        # Step 3: No cache hit — real retrieval + routing + execution
         results = self.store.search(query_embedding, top_k=top_k)
         route = self.router.decide(results)
-        return self.executor.execute(route, query, results)
+        return self.executor.execute(route, query, results, query_vector=query_vec_1d)
 

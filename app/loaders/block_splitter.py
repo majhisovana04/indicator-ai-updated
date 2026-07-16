@@ -1,3 +1,5 @@
+# app/loaders/block_splitter.py
+
 class BlockSplitter:
     """
     Shared utility for splitting markdown content into blocks

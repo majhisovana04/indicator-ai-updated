@@ -1,9 +1,13 @@
 # app/api/server.py
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Header, Request, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.pipeline import AssistantPipeline
 from app.api.schemas import ChatRequest, ChatResponse
 from app.auth.token_verifier import TokenVerifier
+from app.api.schemas import SignalMatrixResponse
+from app.redis_client import get_redis
+import json
 
 
 from app.auth.redis_rate_limiter import RedisRateLimiter
@@ -25,6 +29,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Indicator AI Assistant", lifespan=lifespan)
+
+# Security scheme — enables the 🔓 Authorize button in Swagger UI
+bearer_scheme = HTTPBearer(auto_error=False)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],  # placeholder — update once frontend confirms their dev URL
@@ -37,7 +44,12 @@ app.add_middleware(
 verifier = TokenVerifier()
 rate_limiter = RedisRateLimiter(max_requests=10, window_seconds=60)
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest, req: Request, authorization: str = Header(None)):
+def chat(payload: ChatRequest, req: Request,
+         credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+         authorization: str = Header(None)):
+    # Support both Swagger's HTTPBearer (Authorize button) and raw Authorization header
+    if credentials:
+        authorization = f"Bearer {credentials.credentials}"
     start_time = time.time()
     # 1. Authentication
     if not authorization or not authorization.startswith("Bearer "):
@@ -74,6 +86,71 @@ def chat(payload: ChatRequest, req: Request, authorization: str = Header(None)):
     return ChatResponse(
         answer=result["answer"]
     )
+
+
+@app.get("/api/signal-matrix", response_model=SignalMatrixResponse)
+def signal_matrix(
+    search: str | None = None,
+    symbols: str | None = None,   # comma-separated, e.g. "NSE:RELIANCE,NSE:TCS"
+    page: int = 1,
+    limit: int = 50,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    authorization: str = Header(None),
+):
+    if credentials:
+        authorization = f"Bearer {credentials.credentials}"
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header.")
+    token = authorization.replace("Bearer ", "")
+    try:
+        verifier.verify(token)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid or expired session. Please log in again.")
+
+    r = get_redis()
+    raw = r.get("signal_matrix:nifty50") if r else None
+    if not raw:
+        raise HTTPException(status_code=503, detail="Signal matrix not ready yet. Please check back shortly.")
+
+    all_entries = json.loads(raw)
+
+    if symbols:
+        wanted = {s.strip().upper() for s in symbols.split(",")}
+        all_entries = [e for e in all_entries if e["symbol"].upper() in wanted]
+    elif search:
+        term = search.strip().upper()
+        all_entries = [e for e in all_entries if term in e["symbol"].upper()]
+
+    total = len(all_entries)
+    start_idx = (page - 1) * limit
+    page_entries = all_entries[start_idx:start_idx + limit]
+
+    return SignalMatrixResponse(count=total, results=page_entries)
+
+
+
+@app.get("/api/market-pulse")
+def market_pulse(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    authorization: str = Header(None),
+):
+    if credentials:
+        authorization = f"Bearer {credentials.credentials}"
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header.")
+    token = authorization.replace("Bearer ", "")
+    try:
+        verifier.verify(token)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid or expired session. Please log in again.")
+
+    r = get_redis()
+    raw = r.get("market_pulse:nifty50") if r else None
+    if not raw:
+        raise HTTPException(status_code=503, detail="Market pulse not ready yet. Please check back shortly.")
+
+    return json.loads(raw)
+
 @app.get("/health")
 def health(req: Request):
     pipeline = req.app.state.pipeline

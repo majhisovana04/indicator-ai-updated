@@ -1,3 +1,5 @@
+# app/models/chunk.py
+
 from dataclasses import dataclass
 
 

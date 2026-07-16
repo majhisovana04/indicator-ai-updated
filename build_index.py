@@ -1,3 +1,4 @@
+# build_index.py
 from app.loaders.document_loader import DocumentLoader
 from app.loaders.faq_loader import FAQLoader
 from app.chunking.text_chunker import Chunker

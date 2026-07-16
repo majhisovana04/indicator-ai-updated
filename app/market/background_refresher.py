@@ -45,6 +45,9 @@ from app.market.screener import Screener
 from app.market.market_summary import MarketSummaryGenerator
 from app.redis_client import get_redis
 import json
+from app.market.signal_matrix_scanner import SignalMatrixScanner
+import json as _json
+from app.market.market_pulse import compute_market_pulse, refresh_vix_only
 
 screener = Screener()
 summary_generator = MarketSummaryGenerator()
@@ -72,15 +75,63 @@ def refresh_market_analysis():
     print("Market analysis refreshed.")
 
 
+signal_scanner = SignalMatrixScanner()
+def refresh_signal_matrix():
+    print("Refreshing Nifty 50 signal matrix...")
+    matrix = signal_scanner.scan_index("nifty50")
+
+    r = get_redis()
+    if r:
+        r.set("signal_matrix:nifty50", _json.dumps(matrix))
+        r.expire("signal_matrix:nifty50", 20 * 3600)  # same 20h pattern as daily_summary
+    print(f"Signal matrix refreshed: {len(matrix)} symbols stored.")
+
+
+def refresh_market_pulse():
+    print("Refreshing market pulse...")
+    r = get_redis()
+    raw_matrix = r.get("signal_matrix:nifty50") if r else None
+    if not raw_matrix:
+        print("[MarketPulse] No signal matrix available yet, skipping pulse refresh.")
+        return
+
+    matrix = _json.loads(raw_matrix)
+    pulse = compute_market_pulse(matrix)
+
+    if r:
+        r.set("market_pulse:nifty50", _json.dumps(pulse))
+        r.expire("market_pulse:nifty50", 20 * 3600)
+    print(f"Market pulse refreshed: {pulse['mood']}, VIX={pulse['volatility']['vix_value']}")
+
+
+
+
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
     scheduler.add_job(
         refresh_market_analysis,
         CronTrigger(day_of_week="mon-fri", hour=15, minute=45)
     )
+    scheduler.add_job(
+        refresh_signal_matrix,
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=50)   # staggered 5 min after, avoids overlapping API bursts
+    )
+    scheduler.add_job(
+        refresh_market_pulse,
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=55)  # 5 min after signal matrix
+    )
+    # scheduler — add alongside your existing jobs
+    scheduler.add_job(
+        refresh_vix_only,
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/15")
+    )
+    
     scheduler.start()
     try:
         refresh_market_analysis()
+        refresh_signal_matrix()
+        refresh_market_pulse()
+       
     except Exception as e:
         print(f"Initial market refresh failed (will retry on next scheduled run): {e}")
 

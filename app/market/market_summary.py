@@ -1,3 +1,5 @@
+# app/market/market_summary.py
+
 from datetime import datetime
 from app.generation.llm_generator import LLMGenerator
 
