@@ -12,7 +12,7 @@ class Embedder:
 
     def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
         self.model_name = model_name
-        self.model = TextEmbedding(model_name=model_name, threads=1)
+        self.model = TextEmbedding(model_name=model_name, threads=1, cache_dir="./model_cache")
 
     def _embed_texts(self, texts: list[str]) -> np.ndarray:
         embeddings = list(self.model.embed(texts))  # generator → list
