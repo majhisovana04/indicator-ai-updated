@@ -18,7 +18,7 @@ class ResponseExecutor:
         self.extractor = AnswerExtractor()
         self.llm = LLMGenerator()
         
-        self.semantic_cache = RedisSemanticCache(embedder=embedder, similarity_threshold=0.75)
+        self.semantic_cache = RedisSemanticCache(embedder=embedder, similarity_threshold=0.84)
         
 
     def execute(self, route: Route, query: str, results: list, query_vector: list = None) -> dict:
@@ -63,7 +63,12 @@ class ResponseExecutor:
                 }
 
         return {
-            "answer": "I don't have information on that topic yet. I can help explain the trading indicators available on this platform.",
+            "answer": (
+                "I'm not able to help with that specific question, but I'm here for anything "
+                "related to trading indicators — like RSI, MACD, moving averages, or how to "
+                "read technical signals. Feel free to ask me about those, or about a specific "
+                "stock's current technical picture."
+            ),
             "tier": "fallback",
             "source": None,
             "distance": top_distance

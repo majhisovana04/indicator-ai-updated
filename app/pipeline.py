@@ -1,176 +1,105 @@
 
+# app/pipeline.py
+
 # from app.embedding.embedder import Embedder
 # from app.vectorstore.vector_store import VectorStore
 # from app.routing.router import Router
 # from app.generation.response_executor import ResponseExecutor
-
+# from app.generation.redis_semantic_cache import RedisSemanticCache
 # from app.routing.intent_classifier import IntentClassifier, Intent
-# from app.market.background_refresher import live_summary_cache
+# from app.redis_client import get_redis
+# import json
 # import time
+# from app.routing.router import Route
 
 # class AssistantPipeline:
-#     """
-#     Orchestrates the full flow: embed query -> search -> route -> execute.
-#     This class has no side effects on import — it only runs when explicitly used.
-#     """
-
 #     def __init__(self):
 #         self.embedder = Embedder()
 #         self.store = VectorStore()
 #         self.store.load()
 #         self.router = Router()
 #         self.executor = ResponseExecutor(embedder=self.embedder)
-
-
 #         self.intent_classifier = IntentClassifier(embedder=self.embedder)
 
 #     def ask(self, query: str, top_k: int = 3) -> dict:
 #         t0 = time.time()
-#         intent = self.intent_classifier.classify(query)
-#         t1 = time.time()
-#         print(f"Intent classification: {t1-t0:.2f}s")
 
-#         # if intent == Intent.LIVE_SCREENING:
-#         #     cached = live_summary_cache.get()
-#         #     if cached:
-#         #         return {
-#         #                     "answer": cached["answer"],
-#         #                     "tier": "live_screening",
-#         #                     "distance": None
-#         #                 }
-#         #     return {
-#         #                 "answer": "Today's market analysis will be available after market close (3:30 PM IST). Please check back then.",
-#         #                 "tier": "live_screening_pending",
-#         #                 "distance": None
-#         #             }
+#         # Step 0: Embed ONCE — reused for classification + whichever cache check applies
+#         query_embedding = self.embedder.embed_query(query)   # (1, 384) — for FAISS
+#         query_vec_1d = query_embedding[0].tolist()             # plain list — for cosine sim + Redis storage
+
+#         # Step: Policy check FIRST — catches guarantee/prediction/advice-seeking
+#         # questions regardless of topic, BEFORE intent classification can misroute them
+#         policy_results = self.store.search(query_embedding, top_k=3)
+#         policy_route = self.router.decide(policy_results)
+
+#         if policy_route == Route.POLICY:
+#             top_chunk = policy_results[0]["chunk"]
+#             return {
+#             "answer": self.executor.extractor.extract_answer(top_chunk),
+#             "tier": "policy_direct",
+#             "source": top_chunk.source,
+#             "distance": policy_results[0]["distance"]
+#         }
+
+#         # Step 1: Classify FIRST — free, local, zero network calls
+#         t1 = time.time()
+#         intent = self.intent_classifier.classify_with_vec(query_vec_1d)
+#         t2 = time.time()
+#         print(f"Intent classification: {t2-t1:.3f}s")
+
+#         # Step 2a: LIVE_SCREENING — only touch MARKET cache, never EDUCATION
 #         if intent == Intent.LIVE_SCREENING:
-#             cached = live_summary_cache.get()
+#             cached = self.executor.semantic_cache.get(
+#                 query, cache_type=RedisSemanticCache.MARKET, query_vector=query_vec_1d
+#             )
 #             if cached:
-#                 age_hours = live_summary_cache.get_age_seconds() / 3600
-#                 freshness_note = ""
-#                 if age_hours > 20:  # roughly "this is from a previous trading day"
-#                     freshness_note = " (Note: this reflects the most recent available trading day's data.)"
-#                 return {
-#                     "answer": cached["answer"] + freshness_note,
-#                     "tier": "live_screening",
-#                     "distance": None
-#                 }
-#             # Only reached if the server has NEVER successfully run a refresh yet
+#                 print(f"[Pipeline] MARKET cache HIT")
+#                 return {"answer": cached, "tier": "market_cached", "distance": None}
+
+#             r = get_redis()
+#             cached_market_json = r.get("market:daily_summary") if r else None
+
+#             if cached_market_json:
+#                 cached_market = json.loads(cached_market_json)
+#                 answer = cached_market["answer"]
+#                 self.executor.semantic_cache.set(
+#                     query, answer, cache_type=RedisSemanticCache.MARKET, query_vector=query_vec_1d
+#                 )
+#                 return {"answer": answer, "tier": "live_screening", "distance": None}
+
 #             return {
 #                 "answer": "Market analysis is being prepared for the first time. Please check back in a few minutes.",
 #                 "tier": "live_screening_pending",
 #                 "distance": None
 #             }
 
-#         query_vec = self.embedder.embed_query(query)
-#         results = self.store.search(query_vec, top_k=top_k)
+#         # Step 2b: EDUCATION — only touch EDUCATION cache, never MARKET
+#         cached = self.executor.semantic_cache.get(
+#             query, cache_type=RedisSemanticCache.EDUCATION, query_vector=query_vec_1d
+#         )
+#         if cached:
+#             print(f"[Pipeline] EDUCATION cache HIT — skipping FAISS + LLM")
+#             return {"answer": cached, "tier": "llm_cached", "distance": None}
+
+#         # Step 3: No cache hit — real retrieval + routing + execution
+#         results = self.store.search(query_embedding, top_k=top_k)
 #         route = self.router.decide(results)
-#         return self.executor.execute(route, query, results)
-
-# app/pipeline.py — full replacement
-'''
-from app.embedding.embedder import Embedder
-from app.vectorstore.vector_store import VectorStore
-from app.routing.router import Router
-from app.generation.response_executor import ResponseExecutor
-from app.generation.redis_semantic_cache import RedisSemanticCache
-from app.routing.intent_classifier import IntentClassifier, Intent
-from app.market.background_refresher import live_summary_cache
-import time
-
-
-class AssistantPipeline:
-    """
-    Orchestrates the full flow: embed → cache check → intent → route → execute.
-    """
-
-    def __init__(self):
-        self.embedder = Embedder()
-        self.store = VectorStore()
-        self.store.load()
-        self.router = Router()
-        self.executor = ResponseExecutor(embedder=self.embedder)
-        self.intent_classifier = IntentClassifier(embedder=self.embedder)
-
-    def ask(self, query: str, top_k: int = 3) -> dict:
-        t0 = time.time()
-
-        # ── Step 0: Embed ONCE ──────────────────────────────────────
-        # embed_query returns shape (1, 384) — we keep both:
-        #   query_embedding : (1, 384)  → for vector search (store.search)
-        #   query_vec_1d    : (384,)    → for cosine similarity (cache + classifier)
-        query_embedding = self.embedder.embed_query(query)   # (1, 384)
-        query_vec_1d    = query_embedding[0]                 # (384,)
-
-        # ── Step 1: Check Redis cache BEFORE classification ─────────
-        # Check education cache first (most common query type)
-        cached = self.executor.semantic_cache.get(query, cache_type=RedisSemanticCache.EDUCATION)
-        if cached:
-            print(f"[Pipeline] Redis HIT (education) — skipping classification + LLM")
-            return {
-                "answer": cached,
-                "tier": "llm_cached",
-                "distance": None
-            }
-
-        # Check market cache
-        cached = self.executor.semantic_cache.get(query, cache_type=RedisSemanticCache.MARKET)
-        if cached:
-            print(f"[Pipeline] Redis HIT (market) — skipping classification + market fetch")
-            return {
-                "answer": cached,
-                "tier": "market_cached",
-                "distance": None
-            }
-
-        # ── Step 2: Intent classification (reuse pre-computed vec) ──
-        t1 = time.time()
-        intent = self.intent_classifier.classify_with_vec(query_vec_1d)
-        t2 = time.time()
-        print(f"Intent classification: {t2-t1:.2f}s (embedding reused, not re-computed)")
-
-        # ── Step 3a: Market / Live Screening path ───────────────────
-        if intent == Intent.LIVE_SCREENING:
-            cached_market = live_summary_cache.get()
-            if cached_market:
-                age_hours = live_summary_cache.get_age_seconds() / 3600
-                freshness_note = ""
-                if age_hours > 20:
-                    freshness_note = " (Note: this reflects the most recent available trading day's data.)"
-                answer = cached_market["answer"] + freshness_note
-
-                # Store in Redis market cache (6h TTL) so next similar question is a cache hit
-                self.executor.semantic_cache.set(
-                    query, answer, cache_type=RedisSemanticCache.MARKET
-                )
-                return {
-                    "answer": answer,
-                    "tier": "live_screening",
-                    "distance": None
-                }
-            return {
-                "answer": "Market analysis is being prepared for the first time. Please check back in a few minutes.",
-                "tier": "live_screening_pending",
-                "distance": None
-            }
-
-        # ── Step 3b: Education path — vector search + route + execute ─
-        results = self.store.search(query_embedding, top_k=top_k)
-        route = self.router.decide(results)
-        return self.executor.execute(route, query, results)'''
+#         return self.executor.execute(route, query, results, query_vector=query_vec_1d)
 
 # app/pipeline.py
-
 from app.embedding.embedder import Embedder
 from app.vectorstore.vector_store import VectorStore
-from app.routing.router import Router
+from app.routing.router import Router, Route
 from app.generation.response_executor import ResponseExecutor
 from app.generation.redis_semantic_cache import RedisSemanticCache
-from app.routing.intent_classifier import IntentClassifier, Intent
+from app.routing.query_classifier import QueryClassifier, QueryIntent
+from app.routing.company_detector import CompanyDetector
+from app.market.screener import Screener
 from app.redis_client import get_redis
 import json
 import time
-from app.routing.router import Route
+
 
 class AssistantPipeline:
     def __init__(self):
@@ -179,47 +108,160 @@ class AssistantPipeline:
         self.store.load()
         self.router = Router()
         self.executor = ResponseExecutor(embedder=self.embedder)
-        self.intent_classifier = IntentClassifier(embedder=self.embedder)
+        self.query_classifier = QueryClassifier(embedder=self.embedder)
+        self.company_detector = CompanyDetector(index="nifty500")
+        self.screener = Screener()
+
+    def _describe_company_sentiment(self, company_symbol: str) -> str:
+        """
+        Used ONLY for the SAFETY branch — describes what indicators
+        show WITHOUT a buy/sell verdict. Reuses the same signals
+        Screener.analyze_specific_company() already computes.
+        """
+        full_symbol = f"NSE:{company_symbol}"
+        try:
+            analysis = self.screener.analyze_specific_company(full_symbol)
+            if not analysis["available"]:
+                return (
+                    f"I can't tell you whether to buy or sell — that's a decision only you "
+                    f"(or a registered advisor) should make. I also can't provide reliable "
+                    f"technical signals for {company_symbol} right now: {analysis['reason']}"
+                )
+
+            bullish_count = sum(1 for s in analysis["signals"] if "bullish" in s.lower() or "above" in s.lower() or "recovering" in s.lower())
+            if bullish_count >= 2:
+                sentiment = "bullish"
+            elif bullish_count == 0:
+                sentiment = "bearish"
+            else:
+                sentiment = "neutral"
+
+            return (
+                f"I can't tell you whether to buy or sell — that's a decision only you "
+                f"(or a registered advisor) should make. What I can tell you is that "
+                f"technical indicators currently show {company_symbol} as {sentiment}. "
+                f"This reflects technical signals only, not investment advice."
+            )
+        except Exception as e:
+            print(f"[Pipeline] SAFETY company sentiment lookup failed for {full_symbol}: {e}")
+            return (
+                "I can't tell you whether to buy or sell or any future prediction  — that's a decision only you "
+                "(or a registered advisor) should make. I can explain what technical "
+                "indicators suggest and how traders interpret them."
+            )
+
+    def _get_company_signal(self, full_symbol: str) -> tuple[str, str]:
+        """
+        EXACT-KEY cache for company-specific signals — NOT the fuzzy
+        semantic cache. Company identity must never be "fuzzy matched":
+        two differently-worded questions about two DIFFERENT companies
+        could otherwise embed closely enough to cross-contaminate
+        (e.g. "signal for X?" vs "signal for Y?" scoring high on pure
+        sentence-shape similarity). Keying by the real ticker makes
+        that impossible by construction, regardless of phrasing.
+
+        Returns (answer, tier).
+        """
+        r = get_redis()
+        cache_key = f"company_signal:{full_symbol}"
+
+        cached = r.get(cache_key) if r else None
+        if cached:
+            return json.loads(cached)["answer"], "company_cached"
+
+        try:
+            analysis = self.screener.analyze_specific_company(full_symbol)
+            if analysis["available"]:
+                signals_text = ", ".join(analysis["signals"])
+                answer = (
+                    f"For {full_symbol}: {signals_text}. "
+                    f"This reflects technical indicator signals, not investment advice."
+                )
+            else:
+                answer = (
+                    f"I can share {full_symbol}'s current price, but I can't provide "
+                    f"reliable technical analysis for it right now: {analysis['reason']}"
+                )
+
+            if r:
+                # 1h TTL — deliberately short since this is live-ish data,
+                # not stable education content.
+                r.set(cache_key, json.dumps({"answer": answer}), ex=3600)
+
+            return answer, "company_specific"
+
+        except Exception as e:
+            print(f"[Pipeline] company-specific analysis failed for {full_symbol}: {e}")
+            return (
+                f"I couldn't fetch live data for {full_symbol} right now. Please try again shortly.",
+                "company_specific_failed"
+            )
 
     def ask(self, query: str, top_k: int = 3) -> dict:
         t0 = time.time()
 
-        # Step 0: Embed ONCE — reused for classification + whichever cache check applies
-        query_embedding = self.embedder.embed_query(query)   # (1, 384) — for FAISS
-        query_vec_1d = query_embedding[0].tolist()             # plain list — for cosine sim + Redis storage
+        # Step 0: Embed ONCE
+        query_embedding = self.embedder.embed_query(query)
+        query_vec_1d = query_embedding[0].tolist()
 
-        # Step: Policy check FIRST — catches guarantee/prediction/advice-seeking
-        # questions regardless of topic, BEFORE intent classification can misroute them
-        policy_results = self.store.search(query_embedding, top_k=3)
-        policy_route = self.router.decide(policy_results)
+        # Step 1: FAISS search ONCE — reused by SAFETY fallback extraction AND education routing
+        faiss_results = self.store.search(query_embedding, top_k=top_k)
 
-        if policy_route == Route.POLICY:
-            top_chunk = policy_results[0]["chunk"]
-            return {
-            "answer": self.executor.extractor.extract_answer(top_chunk),
-            "tier": "policy_direct",
-            "source": top_chunk.source,
-            "distance": policy_results[0]["distance"]
-        }
-
-        # Step 1: Classify FIRST — free, local, zero network calls
+        # Step 2: Classify ONCE — argmax across SAFETY / LIVE_SCREENING / EDUCATION / OFF_TOPIC
         t1 = time.time()
-        intent = self.intent_classifier.classify_with_vec(query_vec_1d)
+        intent, scores = self.query_classifier.classify_with_vec(query_vec_1d)
         t2 = time.time()
-        print(f"Intent classification: {t2-t1:.3f}s")
+        print(f"Query classification: {t2-t1:.3f}s -> {intent.value} | {scores}")
 
-        # Step 2a: LIVE_SCREENING — only touch MARKET cache, never EDUCATION
-        if intent == Intent.LIVE_SCREENING:
+        # ── Branch 1: SAFETY ──────────────────────────────────────
+        if intent == QueryIntent.SAFETY:
+            company_symbol = self.company_detector.find_company(query)
+
+            if company_symbol:
+                answer = self._describe_company_sentiment(company_symbol)
+                return {
+                    "answer": answer,
+                    "tier": "policy_direct",
+                    "source": None,
+                    "distance": None
+                }
+
+            policy_route = self.router.decide(faiss_results)
+            if policy_route == Route.POLICY:
+                top_chunk = faiss_results[0]["chunk"]
+                return {
+                    "answer": self.executor.extractor.extract_answer(top_chunk),
+                    "tier": "policy_direct",
+                    "source": top_chunk.source,
+                    "distance": faiss_results[0]["distance"]
+                }
+            return {
+                "answer": "I can't offer guarantees about future price movements or tell you what to trade or give you accurate prediction about any stock or index — no one honestly can. What I can do is walk you through what the technical indicators are showing right now, so you have real information to work with. Want me to explain a specific indicator, or check the signals for a particular stock?",
+                "tier": "policy_direct",
+                "source": None,
+                "distance": None
+            }
+
+        # ── Branch 2: LIVE_SCREENING ──────────────────────────────
+        if intent == QueryIntent.LIVE_SCREENING:
+            company_symbol = self.company_detector.find_company(query)
+
+            if company_symbol:
+                full_symbol = f"NSE:{company_symbol}"
+                answer, tier = self._get_company_signal(full_symbol)
+                return {"answer": answer, "tier": tier, "distance": None}
+
+            # No company named — general market summary (safe to stay
+            # on the fuzzy semantic cache, since there's only ONE true
+            # "today's market" answer regardless of how it's phrased)
             cached = self.executor.semantic_cache.get(
                 query, cache_type=RedisSemanticCache.MARKET, query_vector=query_vec_1d
             )
             if cached:
-                print(f"[Pipeline] MARKET cache HIT")
                 return {"answer": cached, "tier": "market_cached", "distance": None}
 
             r = get_redis()
             cached_market_json = r.get("market:daily_summary") if r else None
-
             if cached_market_json:
                 cached_market = json.loads(cached_market_json)
                 answer = cached_market["answer"]
@@ -229,21 +271,17 @@ class AssistantPipeline:
                 return {"answer": answer, "tier": "live_screening", "distance": None}
 
             return {
-                "answer": "Market analysis is being prepared for the first time. Please check back in a few minutes.",
+                "answer": "Today's market analysis is still being prepared — it updates once daily shortly after market close (around 3:30 PM IST). Check back then for a fresh look at today's technical signals. In the meantime, I'm happy to explain how any of the indicators work.",
                 "tier": "live_screening_pending",
                 "distance": None
             }
 
-        # Step 2b: EDUCATION — only touch EDUCATION cache, never MARKET
+        # ── Branch 3: EDUCATION (default) + OFF_TOPIC ─────────────
         cached = self.executor.semantic_cache.get(
             query, cache_type=RedisSemanticCache.EDUCATION, query_vector=query_vec_1d
         )
         if cached:
-            print(f"[Pipeline] EDUCATION cache HIT — skipping FAISS + LLM")
             return {"answer": cached, "tier": "llm_cached", "distance": None}
 
-        # Step 3: No cache hit — real retrieval + routing + execution
-        results = self.store.search(query_embedding, top_k=top_k)
-        route = self.router.decide(results)
-        return self.executor.execute(route, query, results, query_vector=query_vec_1d)
-
+        route = self.router.decide(faiss_results)
+        return self.executor.execute(route, query, faiss_results, query_vector=query_vec_1d)
