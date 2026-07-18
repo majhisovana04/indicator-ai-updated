@@ -1,10 +1,6 @@
 .env
 __pycache__/
-*.pkl
-*.index
 .xane_indicator
-vector_store.index
-chunk_metadata.pkl
 tests/
 app_activity.log
 app/embedding_with ST/
