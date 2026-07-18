@@ -84,6 +84,9 @@ EDUCATION_EXAMPLES = [
     "what is a confluence signal",
     "how is adx different from rsi",
     "why would a stock have high volume but small price move",
+    "does a market gap affect technical signals",
+    "how do sudden price drops break momentum indicators",
+    "will high volatility ruin my rsi strategy",
 ]
 
 # Genuinely unrelated to trading/markets at all. Extend this from real

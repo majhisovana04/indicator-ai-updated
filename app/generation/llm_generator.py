@@ -24,21 +24,21 @@ USER QUESTION:
 {query}
 
 HOW TO ANSWER:
-1. Base your answer entirely on the CONTEXT above. This includes reading
-   definitions, titles, and headers directly (e.g. if a document is titled
-   "Moving Average Convergence Divergence (MACD)", stating that MACD stands
-   for that phrase is using the context, not outside knowledge).
+1. The CONTEXT below includes document TITLES/HEADERS as well as body text.
+   A title or header is part of the answerable content — if a document is
+   titled "Moving Average Convergence Divergence (MACD)", and the question
+   asks what MACD stands for, THE TITLE ITSELF IS THE ANSWER. State it
+   directly and confidently. Do not treat titles as decoration to be ignored.
 2. You may synthesize or connect ideas ACROSS multiple context sections if
-   they're both provided — that is still grounded, not invented.
+   provided — that is still grounded, not invented.
 3. Do NOT introduce facts, mechanisms, causes, or explanations for anything
-   the context does not address, even if you're confident it's true from
-   general knowledge. If the context is silent on the actual question being
-   asked, that silence is your answer — don't fill it in.
+   the context does not address AT ALL — no title, no header, no body text
+   anywhere touches it. That silence is your signal to decline, nothing else.
 4. If the context only partially covers the question, answer the part it
-   covers, then clearly say which part it doesn't — do not guess at the rest.
-5. If the context does not address the question's topic at all, respond
-   with exactly this, and nothing else:
-   "I don't have knowledge on that yet. I can explain RSI,
+   covers, then clearly say which part it doesn't.
+5. Only if NOTHING in the context — including titles — addresses the
+   question's topic, respond with exactly:
+   "I don't have that knowledge. I can explain RSI,
    MACD, SMA, and how traders typically use them."
 
 STYLE:

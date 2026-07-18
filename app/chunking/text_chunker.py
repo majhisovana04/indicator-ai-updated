@@ -17,6 +17,14 @@ class Chunker:
         if not document.content.strip():
             return []
 
+        # Extract the document's top-level title (the "# ..." line),
+        # if present, so it can be prepended to EVERY chunk. Without
+        # this, the title becomes its own isolated, sparse chunk that
+        # only sometimes ranks in top-k retrieval — meaning the LLM
+        # sometimes never sees what an acronym stands for at all.
+        title_match = re.search(r"(?:^|\n)\s*#\s+([^\n]+)", document.content)
+        title = title_match.group(1).strip() if title_match else None
+
         sections = re.split(r"\n##\s+", document.content)
 
         chunks = []
@@ -26,10 +34,16 @@ class Chunker:
 
             if not section:
                 continue
+            # Skip re-adding the title to itself if this section IS the title-only chunk
+            if title and section.strip("# ").strip() == title:
+                continue
+
+            content = f"{document.source} — {title}\n\n{section}" if title else section
+
 
             chunk = Chunk(
                 id=0,  # placeholder — real ID assigned later in main.py
-                content=section,
+                content=content,
                 source=document.source,
                 doc_type=document.doc_type
             )
