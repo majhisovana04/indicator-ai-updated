@@ -1,4 +1,7 @@
 # app/embedding/embedder.py (FastEmbed version)
+import os
+os.environ["ORT_DISABLE_ALL_MEMORY_ARENA_SHRINKAGE"] = "0"
+
 import numpy as np
 from fastembed import TextEmbedding
 from app.models.chunk import Chunk
@@ -12,7 +15,23 @@ class Embedder:
 
     def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
         self.model_name = model_name
-        self.model = TextEmbedding(model_name=model_name, threads=1, cache_dir="./model_cache")
+        #self.model = TextEmbedding(model_name=model_name, threads=1, cache_dir="./model_cache")
+        try:
+            self.model = TextEmbedding(
+                model_name=model_name, 
+                threads=1, 
+                cache_dir="./model_cache",
+                providers=[
+                    ("CPUExecutionProvider", {
+                        "arena_extend_strategy": "kSameAsRequested",
+                        "enable_cpu_mem_arena": "0",
+                    })
+                ]
+            )
+        except TypeError as e:
+            print(f"[Embedder] providers argument not supported by installed fastembed version: {e}")
+            print("[Embedder] Falling back to default initialization")
+            self.model = TextEmbedding(model_name=model_name, threads=1, cache_dir="./model_cache")
 
     def _embed_texts(self, texts: list[str]) -> np.ndarray:
         embeddings = list(self.model.embed(texts))  # generator → list

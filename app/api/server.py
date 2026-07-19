@@ -161,15 +161,4 @@ def health(req: Request):
         "status": "ok",
         "providers": pipeline.executor.llm.manager.status()
     }
-
-
-# add temporarily to app/api/server.py
-import importlib.util
-
-@app.get("/debug/deps")
-def debug_deps():
-    return {
-        "torch_installed": importlib.util.find_spec("torch") is not None,
-        "sentence_transformers_installed": importlib.util.find_spec("sentence_transformers") is not None,
-        "fastembed_installed": importlib.util.find_spec("fastembed") is not None,
-    }
+
