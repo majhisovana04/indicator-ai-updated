@@ -6,3 +6,4 @@ app_activity.log
 app/embedding_with ST/
 app/embedding_withHFModel/
 market_test_results.txt
+app/routing/intent_classifier.py
