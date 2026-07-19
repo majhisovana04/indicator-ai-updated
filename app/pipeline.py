@@ -101,16 +101,39 @@ import json
 import time
 
 
+import psutil, os, sys
+
+def _mem(label):
+    rss = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+    print(f"[MEM] {label}: {rss:.1f} MB", flush=True)
+
 class AssistantPipeline:
     def __init__(self):
+        _mem("start")
+        
         self.embedder = Embedder()
+        _mem("after Embedder()")
+        
         self.store = VectorStore()
+        _mem("after VectorStore() created")
+        
         self.store.load()
+        _mem("after VectorStore.load()")
+        
         self.router = Router()
+        _mem("after Router()")
+        
         self.executor = ResponseExecutor(embedder=self.embedder)
+        _mem("after ResponseExecutor()")
+        
         self.query_classifier = QueryClassifier(embedder=self.embedder)
+        _mem("after QueryClassifier()")
+        
         self.company_detector = CompanyDetector(index="nifty500")
+        _mem("after CompanyDetector()")
+        
         self.screener = Screener()
+        _mem("end of __init__")
 
     def _describe_company_sentiment(self, company_symbol: str) -> str:
         """

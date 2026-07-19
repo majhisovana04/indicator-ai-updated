@@ -1,4 +1,7 @@
 # app/api/server.py
+import psutil, os
+print(f"[MEM] process start (before any app imports): {psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024:.1f} MB", flush=True)
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
