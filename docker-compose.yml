@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────
+# Indicator AI Assistant — Docker Compose
+# ─────────────────────────────────────────────────────────────
+#
+# Services:
+#   api        — FastAPI server (port 8000)
+#   scheduler  — APScheduler background jobs (no port)
+#
+# Usage:
+#   docker compose --env-file .env up --build
+#   docker compose --env-file .env up -d          # detached
+#   docker compose logs -f api                    # follow API logs
+#   docker compose logs -f scheduler              # follow scheduler logs
+#
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ─── API Server ────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: indicator_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persist the FastEmbed model cache across container restarts.
+      # Avoids re-downloading the ~130MB ONNX model on every restart.
+      - model_cache:/app/model_cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+  # ─── Background Scheduler ──────────────────────────────────
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    container_name: indicator_scheduler
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      api:
+        condition: service_healthy
+
+# ─── Named Volumes ─────────────────────────────────────────
+volumes:
+  model_cache:

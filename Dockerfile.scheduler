@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────
+# Indicator AI Assistant — Background Scheduler
+# ─────────────────────────────────────────────────────────────
+# Runs as a SEPARATE container from the API server.
+# Handles all cron jobs:
+#   - Signal matrix refresh     (Mon-Fri 15:50 IST)
+#   - Market pulse refresh      (Mon-Fri 15:55 IST)
+#   - Market summary refresh    (Mon-Fri 15:45 IST)
+#   - VIX patch update          (Mon-Fri every 15 min, 9-15h IST)
+#
+# Uses requirements-scheduler.txt — deliberately excludes
+# fastembed/onnxruntime/faiss-cpu, since this container's code path
+# (app/market/*, background_refresher.py) never imports embeddings
+# or FAISS. Confirmed via code search before trimming — see note
+# in requirements-scheduler.txt.
+# ─────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+COPY requirements-scheduler.txt .
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements-scheduler.txt
+
+
+# ─────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY app/            ./app/
+COPY run_scheduler.py ./run_scheduler.py
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Scheduler does NOT expose an HTTP port — no EXPOSE, no HEALTHCHECK
+# via HTTP. If you want container-level health visibility, consider
+# a process-liveness check instead (e.g. checking the python process
+# is still running), since there's no endpoint to poll.
+CMD ["python", "run_scheduler.py"]

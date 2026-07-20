@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────
+# .dockerignore — Indicator AI Assistant
+# ─────────────────────────────────────────────────────────────
+
+# ── Secrets — NEVER bake into image ───────────────────────
+.env
+*.env
+.env.*
+
+# ── Git & IDE ──────────────────────────────────────────────
+.git/
+.gitignore
+.vscode/
+.idea/
+*.code-workspace
+
+# ── Python cache ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ───────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Test suite (not needed in production image) ───────────
+tests/
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+app_activity.log
+
+# ── Experimental / legacy embedding modules ───────────────
+app/embedding_with ST/
+app/embedding_withHFModel/
+
+# ── Dev artifacts ─────────────────────────────────────────
+market_test_results.txt
+.xane_indicator/
+
+# ── Model cache (persisted as Docker volume instead) ──────
+model_cache/
+
+# ── Knowledge base source markdown — NOT needed at runtime.
+# build_index.py (run OFFLINE, before docker build) already
+# converts this into vector_store.index + chunk_metadata.pkl,
+# which ARE copied into the image. Corresponding Dockerfile
+# COPY line for knowledge_base/ should be REMOVED, not kept —
+# see Dockerfile fix below.
+knowledge_base/
+
+# ── Docs & local notes ────────────────────────────────────
+*.md
+!README.md
+
+# ── OS junk ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
