@@ -3,13 +3,28 @@ import pandas as pd
 import numpy as np
 
 
+# def calculate_rsi(close_prices: pd.Series, period: int = 14) -> float:
+#     delta = close_prices.diff()
+#     gain = delta.where(delta > 0, 0)
+#     loss = -delta.where(delta < 0, 0)
+
+#     avg_gain = gain.rolling(window=period).mean()
+#     avg_loss = loss.rolling(window=period).mean()
+
+#     rs = avg_gain / avg_loss
+#     rsi = 100 - (100 / (1 + rs))
+#     return round(rsi.iloc[-1], 2)
+
 def calculate_rsi(close_prices: pd.Series, period: int = 14) -> float:
     delta = close_prices.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
 
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
+    # Wilder's smoothing, not a plain rolling mean — a hard 14-day window
+    # reacts too fast and swings too far, which is why RSI was reading
+    # further from 50 than TradingView/Moneycontrol on every stock tested.
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
@@ -82,12 +97,38 @@ def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int
 
 
 # ── NEW: ADX (+DI / -DI included, needed to give ADX a direction) ─
+# def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> dict:
+#     """
+#     Average Directional Index — measures TREND STRENGTH (0-100), not direction.
+#     +DI / -DI (directional indicators) are computed alongside it, since ADX
+#     alone can't tell you bullish vs bearish — only "trending" vs "choppy".
+#     """
+#     up_move = high.diff()
+#     down_move = -low.diff()
+
+#     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+#     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+#     prev_close = close.shift(1)
+#     tr = pd.concat([
+#         high - low,
+#         (high - prev_close).abs(),
+#         (low - prev_close).abs()
+#     ], axis=1).max(axis=1)
+
+#     atr = tr.rolling(window=period).mean()
+#     plus_di = 100 * (pd.Series(plus_dm, index=high.index).rolling(window=period).mean() / atr)
+#     minus_di = 100 * (pd.Series(minus_dm, index=high.index).rolling(window=period).mean() / atr)
+
+#     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+#     adx = dx.rolling(window=period).mean()
+
+#     return {
+#         "adx": round(adx.iloc[-1], 2) if not pd.isna(adx.iloc[-1]) else 0.0,
+#         "plus_di": round(plus_di.iloc[-1], 2) if not pd.isna(plus_di.iloc[-1]) else 0.0,
+#         "minus_di": round(minus_di.iloc[-1], 2) if not pd.isna(minus_di.iloc[-1]) else 0.0,
+#     }
 def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> dict:
-    """
-    Average Directional Index — measures TREND STRENGTH (0-100), not direction.
-    +DI / -DI (directional indicators) are computed alongside it, since ADX
-    alone can't tell you bullish vs bearish — only "trending" vs "choppy".
-    """
     up_move = high.diff()
     down_move = -low.diff()
 
@@ -101,12 +142,19 @@ def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int
         (low - prev_close).abs()
     ], axis=1).max(axis=1)
 
-    atr = tr.rolling(window=period).mean()
-    plus_di = 100 * (pd.Series(plus_dm, index=high.index).rolling(window=period).mean() / atr)
-    minus_di = 100 * (pd.Series(minus_dm, index=high.index).rolling(window=period).mean() / atr)
+    # Wilder smoothing throughout — ATR, +DM, -DM, and DX itself all use it
+    # in the original formula. Plain rolling means here is what produced the
+    # ~1.5-2x inflated ADX readings vs. Moneycontrol/TradingView.
+    atr = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    plus_di = 100 * (
+        pd.Series(plus_dm, index=high.index).ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
+    )
+    minus_di = 100 * (
+        pd.Series(minus_dm, index=high.index).ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
+    )
 
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
-    adx = dx.rolling(window=period).mean()
+    adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
     return {
         "adx": round(adx.iloc[-1], 2) if not pd.isna(adx.iloc[-1]) else 0.0,

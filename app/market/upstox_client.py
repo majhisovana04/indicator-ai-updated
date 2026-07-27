@@ -48,6 +48,7 @@ class UpstoxClient:
         candles = list(reversed(candles))
 
         return pd.DataFrame({
+            "date":   [c[0] for c in candles],   # ISO timestamp — kept for auditability
             "high":   [c[2] for c in candles],
             "low":    [c[3] for c in candles],
             "close":  [c[4] for c in candles],

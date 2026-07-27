@@ -8,3 +8,4 @@ app/embedding_withHFModel/
 market_test_results.txt
 app/routing/intent_classifier.py
 main.py
+stock_recommendation_test/

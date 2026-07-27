@@ -33,6 +33,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # at request time). vector_store.index + chunk_metadata.pkl below
 # already contain everything derived from it.
 COPY app/ ./app/
+COPY stock_recommend/ ./stock_recommend/
 
 # Copy pre-built FAISS index and chunk metadata
 # (built with `python build_index.py` — MUST exist before building
