@@ -11,6 +11,7 @@ from app.auth.token_verifier import TokenVerifier
 from app.api.schemas import SignalMatrixResponse
 from app.redis_client import get_redis
 import json
+from datetime import datetime, timezone
 
 
 from app.auth.redis_rate_limiter import RedisRateLimiter
@@ -186,7 +187,12 @@ def get_rankings(
         raise HTTPException(status_code=404, detail=f"Rankings for {exchange} not ready yet. Please run the daily pipeline.")
 
     # 3. Return JSON payload
-    return json.loads(raw)
+    data = json.loads(raw)
+    updated_at = datetime.fromisoformat(data["updated_at"])
+    age_hours = (datetime.now(timezone.utc) - updated_at).total_seconds() / 3600
+    data["stale"] = age_hours > 24  # surface this to the frontend explicitly
+
+    return data
 
 @app.get("/health")
 def health(req: Request):

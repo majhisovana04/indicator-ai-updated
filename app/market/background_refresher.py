@@ -10,6 +10,8 @@ import json
 from app.market.signal_matrix_scanner import SignalMatrixScanner
 import json as _json
 from app.market.market_pulse import compute_market_pulse, refresh_vix_only
+import requests
+import os
 
 screener = Screener()
 summary_generator = MarketSummaryGenerator()
@@ -70,10 +72,28 @@ def refresh_daily_pipeline():
     print("Starting daily momentum pipeline (runs for ~35 minutes)...")
     try:
         run_stock_recommendation_pipeline()
+        r = get_redis()
+        if r:
+            r.set("pipeline:last_success", datetime.now().isoformat())
         print("Daily stock recommendation(quality, valuation, momentum) pipeline completed successfully.")
     except Exception as e:
         print(f"Daily pipeline failed: {e}")
+        # Cheapest possible alert — a webhook to Slack/Discord/email.
+        alert_url = os.environ.get("ALERT_WEBHOOK_URL", "")
+        if alert_url:
+            try:
+                requests.post(alert_url, json={"text": f"Daily pipeline failed: {e}"}, timeout=5)
+            except Exception:
+                pass  # don't let alerting itself crash the scheduler
 
+
+def retry_if_stale_today():
+    r = get_redis()
+    last_success = r.get("pipeline:last_success") if r else None
+    if last_success and datetime.fromisoformat(last_success).date() == datetime.now().date():
+        return  # already succeeded today, skip
+    print("19:00 run appears to have failed — retrying...")
+    refresh_daily_pipeline()
 
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
@@ -102,6 +122,13 @@ def start_scheduler():
         CronTrigger(day_of_week="mon-fri", hour=19, minute=0)
     )
     
+    # Cheap safety net: retry once more later the same evening if the 19:00
+    # run failed. Only actually re-runs the expensive 35-min job if today's
+    # rankings weren't updated.
+    scheduler.add_job(
+        retry_if_stale_today,
+        CronTrigger(day_of_week="mon-fri", hour=21, minute=30)
+    )
     scheduler.start()
     try:
         refresh_market_analysis()
