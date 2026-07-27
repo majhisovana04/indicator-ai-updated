@@ -1,0 +1,76 @@
+name: Build and Deploy indicator-ai to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  SERVICE_NAME: indicator-ai
+  REGION: asia-southeast1 # Update to your preferred Google Cloud region
+
+jobs:
+  deploy-api:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      # Sanitize project ID
+      - name: Sanitize GCP Project ID
+        run: echo "GCP_PROJECT_ID=$(echo '${{ secrets.GCP_PROJECT_ID }}' | tr -d '[:space:]')" >> $GITHUB_ENV
+
+      # Set up Cloud SDK
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      # Build .env.cloudrun dynamically from Github Secrets
+      - name: Create .env.cloudrun
+        run: |
+          echo "" > .env.cloudrun
+          echo "GEMINI_API_KEY: \"${{ secrets.GEMINI_API_KEY }}\"" >> .env.cloudrun
+          echo "JWT_SECRET: \"${{ secrets.JWT_SECRET }}\"" >> .env.cloudrun
+          echo "UPSTOX_ACCESS_TOKEN: \"${{ secrets.UPSTOX_ACCESS_TOKEN }}\"" >> .env.cloudrun
+          echo "GROQ_API_KEY: \"${{ secrets.GROQ_API_KEY }}\"" >> .env.cloudrun
+          echo "OPENROUTER_API_KEY: \"${{ secrets.OPENROUTER_API_KEY }}\"" >> .env.cloudrun
+          echo "CEREBRAS_API_KEY: \"${{ secrets.CEREBRAS_API_KEY }}\"" >> .env.cloudrun
+          echo "UPSTASH_REDIS_URL: \"${{ secrets.UPSTASH_REDIS_URL }}\"" >> .env.cloudrun
+          echo "UPSTASH_REDIS_TOKEN: \"${{ secrets.UPSTASH_REDIS_TOKEN }}\"" >> .env.cloudrun
+          echo "✅ Generated valid YAML .env.cloudrun for Cloud Run deployment"
+
+      # Docker image build
+      # The pre-built FAISS index and chunk_metadata.pkl are already checked into the repo, 
+      # so the Dockerfile will copy them directly. No extra steps needed here.
+      - name: Build Docker image
+        run: docker build -t gcr.io/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} -f Dockerfile .
+
+      # Push Docker image to GCR
+      - name: Push Docker image
+        run: |
+          gcloud auth configure-docker gcr.io --quiet
+          docker push gcr.io/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+
+      # Deploy to Cloud Run
+      - name: Deploy API to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image gcr.io/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --env-vars-file .env.cloudrun \
+            --port 8000 \
+            --cpu 1 \
+            --memory 1Gi \
+            --min-instances 0 \
+            --max-instances 10
