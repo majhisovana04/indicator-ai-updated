@@ -37,7 +37,7 @@ app = FastAPI(title="Indicator AI Assistant", lifespan=lifespan)
 bearer_scheme = HTTPBearer(auto_error=False)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # placeholder — update once frontend confirms their dev URL
+    allow_origins=["http://localhost:3000", "https://indicator-frontend.vercel.app"],  # placeholder — update once frontend confirms their dev URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -161,4 +161,4 @@ def health(req: Request):
         "status": "ok",
         "providers": pipeline.executor.llm.manager.status()
     }
-
+
