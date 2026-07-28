@@ -11,6 +11,7 @@ from app.auth.token_verifier import TokenVerifier
 from app.api.schemas import SignalMatrixResponse
 from app.redis_client import get_redis
 import json
+from datetime import datetime, timezone
 
 
 from app.auth.redis_rate_limiter import RedisRateLimiter
@@ -153,6 +154,45 @@ def market_pulse(
         raise HTTPException(status_code=503, detail="Market pulse not ready yet. Please check back shortly.")
 
     return json.loads(raw)
+
+@app.get("/api/rankings/{exchange}")
+def get_rankings(
+    exchange: str,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    authorization: str = Header(None),
+):
+    """
+    Returns the top 10 ranked stocks for short, mid, and long horizons.
+    exchange must be 'nse' or 'bse'.
+    """
+    exchange = exchange.upper()
+    if exchange not in ["NSE", "BSE"]:
+        raise HTTPException(status_code=400, detail="Invalid exchange. Must be 'nse' or 'bse'.")
+
+    # 1. Authentication
+    if credentials:
+        authorization = f"Bearer {credentials.credentials}"
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header.")
+    token = authorization.replace("Bearer ", "")
+    try:
+        verifier.verify(token)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid or expired session. Please log in again.")
+
+    # 2. Fetch from Redis
+    r = get_redis()
+    raw = r.get(f"rankings:{exchange}") if r else None
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"Rankings for {exchange} not ready yet. Please run the daily pipeline.")
+
+    # 3. Return JSON payload
+    data = json.loads(raw)
+    updated_at = datetime.fromisoformat(data["updated_at"])
+    age_hours = (datetime.now(timezone.utc) - updated_at).total_seconds() / 3600
+    data["stale"] = age_hours > 24  # surface this to the frontend explicitly
+
+    return data
 
 @app.get("/health")
 def health(req: Request):
