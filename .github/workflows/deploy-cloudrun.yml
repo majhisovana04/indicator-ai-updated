@@ -48,29 +48,62 @@ jobs:
           echo "UPSTASH_REDIS_TOKEN: \"${{ secrets.UPSTASH_REDIS_TOKEN }}\"" >> .env.cloudrun
           echo "✅ Generated valid YAML .env.cloudrun for Cloud Run deployment"
 
-      # Docker image build
-      # The pre-built FAISS index and chunk_metadata.pkl are already checked into the repo, 
-      # so the Dockerfile will copy them directly. No extra steps needed here.
-      - name: Build Docker image
-        run: docker build -t gcr.io/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} -f Dockerfile .
+      # Build Docker images
+      - name: Build Docker images
+        run: |
+          docker build -t gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-market:${{ github.sha }} -f Dockerfile.market .
+          docker build -t gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-chat:${{ github.sha }} -f Dockerfile.chat .
+          docker build -t gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-scheduler:${{ github.sha }} -f Dockerfile.scheduler .
 
-      # Push Docker image to GCR
-      - name: Push Docker image
+      # Push Docker images to GCR
+      - name: Push Docker images
         run: |
           gcloud auth configure-docker gcr.io --quiet
-          docker push gcr.io/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          docker push gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-market:${{ github.sha }}
+          docker push gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-chat:${{ github.sha }}
+          docker push gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-scheduler:${{ github.sha }}
 
-      # Deploy to Cloud Run
-      - name: Deploy API to Cloud Run
+      # Deploy Market API to Cloud Run
+      - name: Deploy Market API
         run: |
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image gcr.io/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+          gcloud run deploy indicator-market \
+            --image gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-market:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --platform managed \
             --allow-unauthenticated \
             --env-vars-file .env.cloudrun \
             --port 8000 \
             --cpu 1 \
-            --memory 1Gi \
+            --memory 512Mi \
             --min-instances 0 \
             --max-instances 10
+
+      # Deploy Chat API to Cloud Run
+      - name: Deploy Chat API
+        run: |
+          gcloud run deploy indicator-chat \
+            --image gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-chat:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --env-vars-file .env.cloudrun \
+            --port 8001 \
+            --cpu 1 \
+            --memory 2Gi \
+            --min-instances 0 \
+            --max-instances 10
+
+      # Deploy Background Scheduler to Cloud Run
+      - name: Deploy Scheduler
+        run: |
+          gcloud run deploy indicator-scheduler \
+            --image gcr.io/${{ env.GCP_PROJECT_ID }}/indicator-scheduler:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --env-vars-file .env.cloudrun \
+            --port 8080 \
+            --cpu 1 \
+            --memory 512Mi \
+            --min-instances 1 \
+            --max-instances 1
