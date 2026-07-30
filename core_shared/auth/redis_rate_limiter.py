@@ -6,12 +6,13 @@ from core_shared.redis_client import get_redis
 class RedisRateLimiter:
     KEY_PREFIX = "rl"
 
-    def __init__(self, max_requests: int = 10, window_seconds: int = 60):
+    def __init__(self, max_requests: int = 10, window_seconds: int = 60, redis_getter=None):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
+        self.redis_getter = redis_getter or get_redis
 
     def is_allowed(self, user_id: str) -> bool:
-        r = get_redis()
+        r = self.redis_getter()
         if r is None:
             print(f"[RedisRateLimiter] Redis unavailable — allowing user {user_id} (degraded mode)")
             return True
@@ -45,7 +46,7 @@ class RedisRateLimiter:
             return True
 
     def get_remaining(self, user_id: str) -> int:
-        r = get_redis()
+        r = self.redis_getter()
         if r is None:
             return self.max_requests
 

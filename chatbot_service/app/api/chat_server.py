@@ -35,9 +35,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from core_shared.redis_client import get_chat_redis
+
 verifier = TokenVerifier()
-# Ensure RedisRateLimiter is using the correct chat redis (will update this separately)
-rate_limiter = RedisRateLimiter(max_requests=10, window_seconds=60)
+# Ensure RedisRateLimiter is using the correct chat redis
+rate_limiter = RedisRateLimiter(max_requests=10, window_seconds=60, redis_getter=get_chat_redis)
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest, req: Request,
