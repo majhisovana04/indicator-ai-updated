@@ -3,8 +3,7 @@ __pycache__/
 .xane_indicator
 tests/
 app_activity.log
-app/embedding_with ST/
-app/embedding_withHFModel/
+Prev/
 market_test_results.txt
 app/routing/intent_classifier.py
 main.py
