@@ -7,7 +7,7 @@ every symbol is kept, per the "show all, let user search/select" design).
 import concurrent.futures
 import time
 from market_service.app.market.upstox_client import UpstoxClient
-from market_service.app.market.watchlist_loader import WatchlistLoader
+from core_shared.watchlist_loader import WatchlistLoader
 from market_service.app.market.signal_engine import compute_signal_matrix
 
 

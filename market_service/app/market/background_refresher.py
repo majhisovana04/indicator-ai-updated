@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from market_service.app.market.screener import Screener
 from market_service.app.market.market_summary import MarketSummaryGenerator
-from stock_recommend.daily_pipeline import run_stock_recommendation_pipeline
+from market_service.app.stock_recommend.daily_pipeline import run_stock_recommendation_pipeline
 from core_shared.redis_client import get_redis
 import json
 from market_service.app.market.signal_matrix_scanner import SignalMatrixScanner

@@ -3,38 +3,56 @@
 # ─────────────────────────────────────────────────────────────
 #
 # Services:
-#   api        — FastAPI server (port 8000)
+#   market_api — FastAPI server for market endpoints (port 8000)
+#   chat_api   — FastAPI server for chatbot (port 8001)
 #   scheduler  — APScheduler background jobs (no port)
 #
 # Usage:
 #   docker compose --env-file .env up --build
 #   docker compose --env-file .env up -d          # detached
-#   docker compose logs -f api                    # follow API logs
-#   docker compose logs -f scheduler              # follow scheduler logs
 #
 # ─────────────────────────────────────────────────────────────
 
 services:
 
-  # ─── API Server ────────────────────────────────────────────
-  api:
+  # ─── Market API Server ─────────────────────────────────────
+  market_api:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: indicator_api
+      dockerfile: Dockerfile.market
+    container_name: indicator_market_api
     restart: unless-stopped
     ports:
-      - "8080:8000"
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ─── Chatbot API Server ────────────────────────────────────
+  chat_api:
+    build:
+      context: .
+      dockerfile: Dockerfile.chat
+    container_name: indicator_chat_api
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
       # Persist the FastEmbed model cache across container restarts.
-      # Avoids re-downloading the ~130MB ONNX model on every restart.
-      - model_cache:/app/model_cache
+      - model_cache:/app/chatbot_service/model_cache
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 30s
       timeout: 10s
       start_period: 90s
@@ -52,7 +70,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     depends_on:
-      api:
+      market_api:
         condition: service_healthy
 
 # ─── Named Volumes ─────────────────────────────────────────

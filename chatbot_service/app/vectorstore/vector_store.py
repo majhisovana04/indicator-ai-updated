@@ -10,8 +10,8 @@ class VectorStore:
     search results back to their original content.
     """
 
-    def __init__(self, index_path: str = "vector_store.index",
-                 metadata_path: str = "chunk_metadata.pkl"):
+    def __init__(self, index_path: str = "chatbot_service/vector_store.index",
+                 metadata_path: str = "chatbot_service/chunk_metadata.pkl"):
         self.index_path = Path(index_path)
         self.metadata_path = Path(metadata_path)
         self.index = None

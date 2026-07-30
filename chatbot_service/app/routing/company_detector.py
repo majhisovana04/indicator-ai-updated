@@ -1,6 +1,6 @@
 # app/routing/company_detector.py
 import re
-from market_service.app.market.watchlist_loader import WatchlistLoader
+from core_shared.watchlist_loader import WatchlistLoader
 
 # Only needed for names where the real ticker abbreviates differently
 # than how people actually type the company name. This list stays SMALL

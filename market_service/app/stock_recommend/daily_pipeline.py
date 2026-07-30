@@ -11,7 +11,7 @@ from market_service.app.market.signal_engine import compute_horizon_signal_matri
 from market_service.app.market.scoring_utils import compute_composite_scores
 from core_shared.redis_client import get_redis
 import json
-from stock_recommend.build_scoring_input import (
+from market_service.app.stock_recommend.build_scoring_input import (
     load_fundamentals,
     load_nse_universe,
     load_bse_universe,

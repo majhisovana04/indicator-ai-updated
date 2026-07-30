@@ -1,17 +1,17 @@
 # ─────────────────────────────────────────────────────────────
-# Indicator AI Assistant — Background Scheduler
+# Indicator AI Assistant — Chatbot API Server
 # ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-COPY requirements-scheduler.txt .
+COPY requirements.txt .
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements-scheduler.txt
+    pip install --no-cache-dir -r requirements.txt
 
 
 # ─────────────────────────────────────────────────────────────
@@ -24,11 +24,26 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy all monorepo logic so cross-imports work
 COPY core_shared/ ./core_shared/
-COPY market_service/ ./market_service/
 COPY chatbot_service/ ./chatbot_service/
+COPY market_service/ ./market_service/
+
+# The chatbot service already contains vector_store.index and chunk_metadata.pkl
+# which were built locally or in CI/CD pipeline before running docker build.
+
+# FastEmbed writes model files here. Pre-create it.
+RUN mkdir -p chatbot_service/model_cache
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
 
-CMD ["python", "-m", "market_service.run_scheduler"]
+EXPOSE 8001
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')" || exit 1
+
+CMD ["uvicorn", "chatbot_service.app.api.chat_server:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8001", \
+     "--workers", "1", \
+     "--log-level", "info"]

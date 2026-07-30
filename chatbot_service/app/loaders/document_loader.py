@@ -6,7 +6,7 @@ from chatbot_service.app.models.document import Document
 
 
 # Root knowledge base folder
-KNOWLEDGE_BASE = Path("knowledge_base")
+KNOWLEDGE_BASE = Path("chatbot_service/knowledge_base")
 
 
 class DocumentLoader:

@@ -3,7 +3,7 @@ import concurrent.futures
 import time
 from market_service.app.market.upstox_client import UpstoxClient
 from market_service.app.market.indicators import calculate_rsi, calculate_macd, calculate_sma, check_liquidity
-from market_service.app.market.watchlist_loader import WatchlistLoader
+from core_shared.watchlist_loader import WatchlistLoader
 
 
 class Screener:
