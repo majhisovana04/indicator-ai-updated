@@ -92,4 +92,4 @@ def refresh_vix_only():
 
     if r:
         r.set("market_pulse:nifty50", _json.dumps(pulse))
-        r.expire("market_pulse:nifty50", 20 * 3600)
+        r.expire("market_pulse:nifty50", 3 * 24 * 3600)

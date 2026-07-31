@@ -34,8 +34,8 @@ def refresh_market_analysis():
     r = get_redis()
     if r:
         r.set("market:daily_summary", json.dumps(summary_data))
-        # Expires roughly before the next trading day starts (e.g. 20 hours)
-        r.expire("market:daily_summary", 20 * 3600)
+        # Keep until the next run overwrites it (3 days to cover weekends)
+        r.expire("market:daily_summary", 3 * 24 * 3600)
     print("Market analysis refreshed.")
 
 
@@ -47,7 +47,7 @@ def refresh_signal_matrix():
     r = get_redis()
     if r:
         r.set("signal_matrix:nifty50", _json.dumps(matrix))
-        r.expire("signal_matrix:nifty50", 20 * 3600)  # same 20h pattern as daily_summary
+        r.expire("signal_matrix:nifty50", 3 * 24 * 3600)  # Keep for 3 days to cover weekends
     print(f"Signal matrix refreshed: {len(matrix)} symbols stored.")
 
 
@@ -64,7 +64,7 @@ def refresh_market_pulse():
 
     if r:
         r.set("market_pulse:nifty50", _json.dumps(pulse))
-        r.expire("market_pulse:nifty50", 20 * 3600)
+        r.expire("market_pulse:nifty50", 3 * 24 * 3600)
     print(f"Market pulse refreshed: {pulse['mood']}, VIX={pulse['volatility']['vix_value']}")
 
 
