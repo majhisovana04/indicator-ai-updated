@@ -2,7 +2,7 @@ import csv
 
 # ── 1. Load the merged fundamentals we just created ──
 def load_fundamentals(path="fundamentals_523.csv") -> dict:
-    """Returns {isin: {pe, roce, roe, name}}"""
+    """Returns {isin: {eps, roce, roe, name}}"""
     table = {}
     skipped = 0
     with open(path, encoding="utf-8-sig") as f:
@@ -12,7 +12,7 @@ def load_fundamentals(path="fundamentals_523.csv") -> dict:
                 skipped += 1
                 continue
             table[isin] = {
-                "pe": row["pe"], "roce": row["roce"], "roe": row["roe"], "name": row["name"],
+                "eps": row["eps"], "roce": row["roce"], "roe": row["roe"], "name": row["name"],
             }
     if skipped:
         print(f"[warn] {skipped} fundamentals rows had no ISIN — excluded from join table")

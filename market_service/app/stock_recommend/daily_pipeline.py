@@ -200,6 +200,15 @@ def run_stock_recommendation_pipeline():
                 time.sleep(REQUEST_DELAY_SECONDS)
                 continue
 
+            # ── Calculate Real-Time P/E ────────────────────────────────────────
+            current_price = float(df_ohlc["close"].iloc[-1])
+            eps = row.get("eps")
+            if eps is None or str(eps).strip() == "" or float(eps) <= 0:
+                row["realtime_pe"] = 9999.0
+            else:
+                row["realtime_pe"] = round(current_price / float(eps), 2)
+
+
             # ── Compute all 3 horizons — same loop as phase0_validate.py ──────
             horizon_scores = {}
             for horizon in ["short", "mid", "long"]:
@@ -289,16 +298,18 @@ def run_stock_recommendation_pipeline():
         top_10_df = valid_df.sort_values(by=f"composite_{horizon}", ascending=False).head(10)
 
         # 4. Format into clean dictionaries for storage
+        now_timestamp = pd.Timestamp.now(tz="Asia/Kolkata").strftime('%Y-%m-%d %H:%M:%S')
         results = []
         for _, row in top_10_df.iterrows():
             results.append({
                 "symbol": row["symbol"],
+                "timestamp": now_timestamp,
                 "composite_symbol": row["composite_symbol"],
                 "company_name": row["name"],
                 "isin": row["isin"],
                 "sector": row["sector"],
                 "score": round(float(row[f"composite_{horizon}"]), 2),
-                "pe": round(float(row["pe"]), 2) if pd.notna(row["pe"]) else None,
+                "pe": round(float(row["realtime_pe"]), 2) if pd.notna(row["realtime_pe"]) else None,
                 "roce": round(float(row["roce"]), 2) if pd.notna(row["roce"]) else None,
                 "roe": round(float(row["roe"]) * 100, 2) if pd.notna(row["roe"]) else None,
             })

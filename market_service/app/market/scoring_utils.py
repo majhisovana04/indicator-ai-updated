@@ -37,7 +37,7 @@ def compute_composite_scores(df: pd.DataFrame) -> pd.DataFrame:
 
     # The fundamentals are loaded from a CSV, so they might be strings.
     # Convert them to numeric (turning empty strings or invalid data into NaN).
-    for col in ["pe", "roce", "roe"]:
+    for col in ["realtime_pe", "roce", "roe"]:
         if col in df.columns:
             # Handle cases where "%" might be trailing on ROCE/ROE strings
             if df[col].dtype == object:
@@ -58,8 +58,8 @@ def compute_composite_scores(df: pd.DataFrame) -> pd.DataFrame:
         df["quality_score"] = 0
 
     # ── 2. Valuation (Lower P/E is better, so invert the rank: 100 - rank) ──
-    if df["pe"].notna().any():
-        df["valuation_score"] = 100 - sector_relative_percentile(df, "pe")
+    if df["realtime_pe"].notna().any():
+        df["valuation_score"] = 100 - sector_relative_percentile(df, "realtime_pe")
     else:
         df["valuation_score"] = 0
 
