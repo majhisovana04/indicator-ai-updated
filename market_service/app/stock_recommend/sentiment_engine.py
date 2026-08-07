@@ -272,19 +272,28 @@ def fetch_news_for_symbols(
         return {}
 
     try:
-        resp = requests.get(
-            "https://api.upstox.com/v2/news",
-            headers=_UPSTOX_HEADERS,
-            params={
-                "category": "instrument_keys",
-                "instrument_keys": ",".join(key_to_symbol.keys()),
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("data", {})
+        all_news_data = {}
+        all_keys = list(key_to_symbol.keys())
+        chunk_size = 15
+        
+        for i in range(0, len(all_keys), chunk_size):
+            chunk_keys = all_keys[i:i + chunk_size]
+            resp = requests.get(
+                "https://api.upstox.com/v2/news",
+                headers=_UPSTOX_HEADERS,
+                params={
+                    "category": "instrument_keys",
+                    "instrument_keys": ",".join(chunk_keys),
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            chunk_data = resp.json().get("data", {})
+            all_news_data.update(chunk_data)
+            time.sleep(1)  # Polite delay between chunked API calls
+            
         # Map instrument_key → symbol, then build symbol → articles
-        return {key_to_symbol[k]: v for k, v in raw.items() if k in key_to_symbol}
+        return {key_to_symbol[k]: v for k, v in all_news_data.items() if k in key_to_symbol}
     except Exception as e:
         print(f"  [sentiment] Batch news fetch failed: {e}")
         return {}
@@ -356,41 +365,56 @@ def compute_news_scores_for_shortlist(
 
     Returns {composite_symbol: score | None}
     """
-    # Step 1: Fetch all news in one batch call
-    print(f"  [news] Fetching news for {len(symbols)} shortlisted stocks...")
-    news_map = fetch_news_for_symbols(symbols, mapper)
-    print(f"  [news] News returned for {len(news_map)}/{len(symbols)} stocks")
+    # Step 1: Deduplicate symbols by underlying to avoid fetching/scoring twice for BSE/NSE
+    underlying_to_rep_sym = {}
+    for sym in symbols:
+        underlying = sym.split(":", 1)[1] if ":" in sym else sym
+        if underlying not in underlying_to_rep_sym:
+            underlying_to_rep_sym[underlying] = sym
 
-    scores: dict[str, float | None] = {}
+    rep_symbols = list(underlying_to_rep_sym.values())
+
+    print(f"  [news] Fetching news for {len(rep_symbols)} unique companies (from {len(symbols)} shortlisted rows)...")
+    news_map = fetch_news_for_symbols(rep_symbols, mapper)
+    print(f"  [news] News returned for {len(news_map)}/{len(rep_symbols)} companies")
+
+    rep_scores: dict[str, float | None] = {}
     needs_llm: list[dict] = []  # stocks VADER couldn't confidently score
 
     # Step 2: VADER pre-filter
-    for sym in symbols:
+    for sym in rep_symbols:
         articles = news_map.get(sym, [])
         if not articles:
-            scores[sym] = None
+            rep_scores[sym] = None
             continue
 
         headlines = [a.get("heading", "") for a in articles[:5] if a.get("heading")]
         vader_result = _vader_score(headlines)
 
         if vader_result is not None:
-            scores[sym] = vader_result  # VADER is confident — no LLM needed
+            rep_scores[sym] = vader_result  # VADER is confident — no LLM needed
         else:
-            scores[sym] = None          # placeholder — will be filled by LLM
+            rep_scores[sym] = None          # placeholder — will be filled by LLM
             needs_llm.append({"symbol": sym, "headlines": headlines})
 
-    vader_count = sum(1 for s in symbols if scores.get(s) is not None)
-    print(f"  [news] VADER scored {vader_count} stocks, {len(needs_llm)} need LLM")
+    vader_count = sum(1 for s in rep_symbols if rep_scores.get(s) is not None)
+    print(f"  [news] VADER scored {vader_count} companies, {len(needs_llm)} need LLM")
 
     # Step 3: Batch LLM scoring for ambiguous stocks
     for batch_start in range(0, len(needs_llm), _NEWS_BATCH_SIZE):
         batch = needs_llm[batch_start: batch_start + _NEWS_BATCH_SIZE]
-        print(f"  [news] LLM batch {batch_start // _NEWS_BATCH_SIZE + 1}: {len(batch)} stocks...")
+        print(f"  [news] LLM batch {batch_start // _NEWS_BATCH_SIZE + 1}: {len(batch)} companies...")
         llm_scores = score_news_batch_llm(batch)
-        scores.update(llm_scores)
+        rep_scores.update(llm_scores)
 
-    return scores
+    # Step 4: Broadcast scores back to all original symbols (NSE and BSE)
+    final_scores = {}
+    for sym in symbols:
+        underlying = sym.split(":", 1)[1] if ":" in sym else sym
+        rep_sym = underlying_to_rep_sym[underlying]
+        final_scores[sym] = rep_scores.get(rep_sym)
+
+    return final_scores
 
 
 

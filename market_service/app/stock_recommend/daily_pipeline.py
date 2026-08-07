@@ -32,14 +32,20 @@ def run_stock_recommendation_pipeline():
     print("STARTING DAILY PIPELINE (Stages 1-5)")
     print("=" * 60)
 
+    import os
+    from datetime import datetime
+    base_dir = os.path.dirname(__file__)
+    cache_dir = os.path.join(base_dir, "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    cache_file = os.path.join(cache_dir, f"momentum_cache_{today_str}.json")
+
     # -------------------------------------------------------------------------
     # STAGE 1: Load Universe
     # -------------------------------------------------------------------------
     print("\n[Stage 1] Loading Universe and Mappers...")
     mapper = InstrumentMapper()
     
-    import os
-    base_dir = os.path.dirname(__file__)
     nse_csv = os.path.join(base_dir, "ind_nifty500list.csv")
     bse_csv = os.path.join(base_dir, "BSE 500Index_Constituents.csv")
     fund_csv = os.path.join(base_dir, "fundamentals_523.csv")
@@ -51,7 +57,6 @@ def run_stock_recommendation_pipeline():
     print(f"  Loaded {len(bse_universe_raw)} BSE scrip codes from BSE 500")
 
     # We also need a fast lookup to grab Nifty 500's 'Industry' column as our sector
-    # For dual-listed/BSE stocks, we'll try to map their ISIN to the Nifty 500 Industry.
     import csv
     isin_to_sector = {}
     with open(nse_csv, encoding="utf-8-sig") as f:
@@ -82,11 +87,6 @@ def run_stock_recommendation_pipeline():
     # -------------------------------------------------------------------------
     # STAGE 4: Hard Filters (per exchange)
     # -------------------------------------------------------------------------
-    # NOTE — SM/ST/M/MT (SME-board series) excluded by construction, not by code:
-    # These series are not index-eligible for Nifty 500 or S&P BSE 500, so they
-    # cannot appear in the CSVs loaded in Stage 1. Do NOT add a redundant filter
-    # here, and do NOT replace the Stage 1 CSVs with InstrumentMapper.get_all_equity_symbols()
-    # (which IS the full 8,254-stock universe and WOULD require SME filtering).
     print("\n[Stage 4] Running Hard Filters...")
     print("  Fetching surveillance files...")
     surveillance_fetcher = DailySurveillanceFetcher()
@@ -104,37 +104,24 @@ def run_stock_recommendation_pipeline():
             row["composite_symbol"] = sym
             passed_nse.append(row)
         else:
-            # Use .display_text() to get a clean human-readable label instead of
-            # the messy enum repr e.g. "HardFilterReason.SURVEILLANCE_GSM"
             reason = res.reason.display_text()
             failed_counts[reason] = failed_counts.get(reason, 0) + 1
 
     print("  Filtering BSE candidates...")
-    # NOTE — Redundant ISIN resolution (accepted, not a bug):
-    # Each row in bse_candidates already has its ISIN from Stage 3's join.
-    # However, check_hard_filters' BSE path re-derives the ISIN internally via
-    # _resolve_bse_isin(mapper, ...) because BSE surveillance files are ISIN-keyed
-    # and the function has no way to accept a pre-resolved ISIN. At ~500 rows/day
-    # this double-lookup is harmless — not worth refactoring.
     for row in bse_candidates:
         scrip = str(row['scrip_code'])
-        # scrip_code_to_symbol already stores the full composite symbol e.g. "BSE:NSDL"
-        # Do NOT prepend "BSE:" again — that would produce "BSE:BSE:NSDL" and fail every lookup.
         comp_sym = mapper.scrip_code_to_symbol.get(scrip)
         if not comp_sym:
             failed_counts["UNMAPPED_BSE_SCRIP"] = failed_counts.get("UNMAPPED_BSE_SCRIP", 0) + 1
             continue
 
-        # Extract just the bare symbol name (e.g. "NSDL") for human-readable storage
         sym = comp_sym.split(":", 1)[1]
-
         res = check_hard_filters(comp_sym, True, mapper, surveillance)
         if res.passed:
             row["composite_symbol"] = comp_sym
-            row["symbol"] = sym  # bare symbol e.g. "NSDL", not "BSE:NSDL"
+            row["symbol"] = sym
             passed_bse.append(row)
         else:
-            # Same fix: .display_text() gives "Under GSM" instead of enum repr
             reason = res.reason.display_text()
             failed_counts[reason] = failed_counts.get(reason, 0) + 1
 
@@ -231,7 +218,7 @@ def run_stock_recommendation_pipeline():
                     result = compute_horizon_signal_matrix(sym, df_ohlc, horizon=horizon)
                     horizon_scores[horizon] = {
                         "score": float(result["score"]),
-                        "is_liquid": result["is_liquid"],
+                        "is_liquid": bool(result["is_liquid"]),
                         "ai_signal": result["ai_signal"],
                     }
                 except Exception as e:
@@ -270,6 +257,11 @@ def run_stock_recommendation_pipeline():
     print("\n=== Stage 5 Complete! ===")
     print(f"  NSE survivors with momentum: {len(nse_momentum)}")
     print(f"  BSE survivors with momentum: {len(bse_momentum)}")
+
+    # Save to local cache for fast reruns on the same day
+    print(f"  Saving to cache: {cache_file}")
+    with open(cache_file, "w") as f:
+        json.dump({"nse_momentum": nse_momentum, "bse_momentum": bse_momentum}, f)
 
     # -------------------------------------------------------------------------
     # STAGE 6a: Compute Initial Composite Scores (No Sentiment)
