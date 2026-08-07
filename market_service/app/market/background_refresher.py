@@ -5,6 +5,7 @@ from apscheduler.triggers.cron import CronTrigger
 from market_service.app.market.screener import Screener
 from market_service.app.market.market_summary import MarketSummaryGenerator
 from market_service.app.stock_recommend.daily_pipeline import run_stock_recommendation_pipeline
+from market_service.app.stock_recommend.sentiment_engine import store_fii_dii_today
 from core_shared.redis_client import get_redis
 import json
 from market_service.app.market.signal_matrix_scanner import SignalMatrixScanner
@@ -99,27 +100,34 @@ def start_scheduler():
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
     scheduler.add_job(
         refresh_market_analysis,
-        CronTrigger(day_of_week="mon-fri", hour=15, minute=45)
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=45, timezone="Asia/Kolkata")
     )
     scheduler.add_job(
         refresh_signal_matrix,
-        CronTrigger(day_of_week="mon-fri", hour=15, minute=50)   # staggered 5 min after, avoids overlapping API bursts
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=50, timezone="Asia/Kolkata")   # staggered 5 min after, avoids overlapping API bursts
     )
     scheduler.add_job(
         refresh_market_pulse,
-        CronTrigger(day_of_week="mon-fri", hour=15, minute=55)  # 5 min after signal matrix
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=55, timezone="Asia/Kolkata")  # 5 min after signal matrix
     )
     # scheduler — add alongside your existing jobs
     scheduler.add_job(
         refresh_vix_only,
-        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/15")
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/15", timezone="Asia/Kolkata")
     )
     
     # Run the heavy 35-minute momentum pipeline exactly once a day,
     # well after the market closes (7:00 PM IST).
+    # Store today's FII/DII in Redis for rolling sentiment history
+    # Runs at 7:05 PM IST — 5 min after NSE confirms the day's data
+    scheduler.add_job(
+        store_fii_dii_today,
+        CronTrigger(day_of_week="mon-fri", hour=19, minute=5, timezone="Asia/Kolkata")
+    )
+
     scheduler.add_job(
         refresh_daily_pipeline,
-        CronTrigger(day_of_week="mon-fri", hour=19, minute=0)
+        CronTrigger(day_of_week="mon-fri", hour=19, minute=0, timezone="Asia/Kolkata")
     )
     
     # Cheap safety net: retry once more later the same evening if the 19:00
@@ -127,7 +135,7 @@ def start_scheduler():
     # rankings weren't updated.
     scheduler.add_job(
         retry_if_stale_today,
-        CronTrigger(day_of_week="mon-fri", hour=21, minute=30)
+        CronTrigger(day_of_week="mon-fri", hour=21, minute=30, timezone="Asia/Kolkata")
     )
     scheduler.start()
     try:

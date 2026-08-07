@@ -9,6 +9,11 @@ from market_service.app.market.hard_filters import check_hard_filters, HardFilte
 from market_service.app.market.upstox_client import UpstoxClient
 from market_service.app.market.signal_engine import compute_horizon_signal_matrix
 from market_service.app.market.scoring_utils import compute_composite_scores
+from market_service.app.stock_recommend.sentiment_engine import (
+    fetch_fii_dii_signal,
+    compute_sentiment_score,
+    compute_news_scores_for_shortlist,
+)
 from core_shared.redis_client import get_redis
 import json
 from market_service.app.stock_recommend.build_scoring_input import (
@@ -204,7 +209,7 @@ def run_stock_recommendation_pipeline():
             current_price = float(df_ohlc["close"].iloc[-1])
             eps = row.get("eps")
             if eps is None or str(eps).strip() == "" or float(eps) <= 0:
-                row["realtime_pe"] = 9999.0
+                row["realtime_pe"] = None   # missing EPS → excluded from valuation scoring
             else:
                 row["realtime_pe"] = round(current_price / float(eps), 2)
 
@@ -267,15 +272,106 @@ def run_stock_recommendation_pipeline():
     print(f"  BSE survivors with momentum: {len(bse_momentum)}")
 
     # -------------------------------------------------------------------------
-    # STAGE 6: Composite Score Calculation
+    # STAGE 6a: Compute Initial Composite Scores (No Sentiment)
     # -------------------------------------------------------------------------
-    print("\n[Stage 6] Calculating Sector-Relative Percentiles & Composite Scores...")
+    print("\n[Stage 6a] Calculating Initial Composite Scores (Q + V + M)...")
     
-    # Convert our lists of dictionaries to DataFrames
-    # This automatically aligns pe, roce, roe, and momentum columns
     df_nse = pd.DataFrame(nse_momentum)
     df_bse = pd.DataFrame(bse_momentum)
 
+    df_nse = compute_composite_scores(df_nse)
+    df_bse = compute_composite_scores(df_bse)
+
+    # -------------------------------------------------------------------------
+    # STAGE 6b: Shortlist Top 75 per Horizon
+    # -------------------------------------------------------------------------
+    print("\n[Stage 6b] Shortlisting Top 75 candidates for Sentiment Enrichment...")
+
+    def _get_shortlist(df: pd.DataFrame, limit: int = 75) -> set:
+        shortlist = set()
+        for horizon in ["short", "mid", "long"]:
+            if f"composite_{horizon}" in df.columns and f"is_liquid_{horizon}" in df.columns:
+                mask = df[f"is_liquid_{horizon}"] & df[f"composite_{horizon}"].notna()
+                top_syms = df[mask].sort_values(by=f"composite_{horizon}", ascending=False).head(limit)["composite_symbol"]
+                shortlist.update(top_syms.tolist())
+        return shortlist
+
+    nse_shortlist = _get_shortlist(df_nse)
+    bse_shortlist = _get_shortlist(df_bse)
+    full_shortlist = list(nse_shortlist | bse_shortlist)
+
+    print(f"  Shortlisted {len(full_shortlist)} unique stocks across all horizons.")
+
+    # -------------------------------------------------------------------------
+    # STAGE 6c: Fetch News for Shortlist in Batch
+    # -------------------------------------------------------------------------
+    print("\n[Stage 6c] Fetching and Scoring News for Shortlist...")
+    news_scores = compute_news_scores_for_shortlist(full_shortlist, mapper)
+
+    # -------------------------------------------------------------------------
+    # STAGE 6d: Sentiment Enrichment
+    # -------------------------------------------------------------------------
+    print("\n[Stage 6d] Computing Full Sentiment Scores...")
+
+    fii_dii_score = fetch_fii_dii_signal()
+    if fii_dii_score is not None:
+        print(f"  FII/DII signal: {fii_dii_score:+.3f}")
+    else:
+        print("  FII/DII signal: unavailable (will use 0.0 for all stocks)")
+
+    sentiment_errors = 0
+    oi_cache: dict[str, float | None] = {}
+
+    def _apply_sentiment(df: pd.DataFrame, shortlist: set):
+        nonlocal sentiment_errors
+        
+        # Initialize default sentiment columns
+        df["sentiment_score"] = 0.0
+        df["sentiment_fii_dii"] = "N/A"
+        df["sentiment_oi_trend"] = "N/A"
+        df["sentiment_news"] = "N/A"
+        df["sentiment_signals"] = 0
+        
+        for idx, row in df.iterrows():
+            sym = row["composite_symbol"]
+            if sym not in shortlist:
+                continue
+
+            try:
+                underlying = sym.split(":", 1)[1] if ":" in sym else sym
+                news_score = news_scores.get(sym)
+
+                sentiment = compute_sentiment_score(
+                    symbol=sym,
+                    mapper=mapper,
+                    fii_dii_score=fii_dii_score,
+                    news_score=news_score,
+                    oi_cache=oi_cache,
+                    underlying=underlying,
+                )
+                df.at[idx, "sentiment_score"] = sentiment["score"]
+                df.at[idx, "sentiment_fii_dii"] = sentiment["fii_dii"]
+                df.at[idx, "sentiment_oi_trend"] = sentiment["oi_trend"]
+                df.at[idx, "sentiment_news"] = sentiment["news"]
+                df.at[idx, "sentiment_signals"] = sentiment["signals_used"]
+            except Exception as e:
+                print(f"  [warn] sentiment failed for {sym}: {e}")
+                sentiment_errors += 1
+            
+            # Polite delay only when making Upstox OI calls
+            time.sleep(REQUEST_DELAY_SECONDS)
+        
+        return df
+
+    df_nse = _apply_sentiment(df_nse, nse_shortlist)
+    df_bse = _apply_sentiment(df_bse, bse_shortlist)
+
+    print(f"  Stage 6d complete: {len(full_shortlist) - sentiment_errors}/{len(full_shortlist)} shortlisted stocks scored successfully.")
+
+    # -------------------------------------------------------------------------
+    # STAGE 6e: Re-Calculate Composite Scores (With Sentiment)
+    # -------------------------------------------------------------------------
+    print("\n[Stage 6e] Re-Calculating Composite Scores with Sentiment...")
     df_nse = compute_composite_scores(df_nse)
     df_bse = compute_composite_scores(df_bse)
 
@@ -312,6 +408,13 @@ def run_stock_recommendation_pipeline():
                 "pe": round(float(row["realtime_pe"]), 2) if pd.notna(row["realtime_pe"]) else None,
                 "roce": round(float(row["roce"]), 2) if pd.notna(row["roce"]) else None,
                 "roe": round(float(row["roe"]) * 100, 2) if pd.notna(row["roe"]) else None,
+                "sentiment": {
+                    "score": round(float(row.get("sentiment_score", 0.0)), 3),
+                    "fii_dii": row.get("sentiment_fii_dii", "N/A"),
+                    "oi_trend": row.get("sentiment_oi_trend", "N/A"),
+                    "news": row.get("sentiment_news", "N/A"),
+                    "signals_used": int(row.get("sentiment_signals", 0)),
+                },
             })
         return results
 

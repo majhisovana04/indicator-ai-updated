@@ -69,27 +69,53 @@ def compute_composite_scores(df: pd.DataFrame) -> pd.DataFrame:
     df["momentum_score_long"] = percentile_rank(df["momentum_raw_long"].fillna(0))
 
     # ── 4. Apply Re-Normalized Weights ──
-    # Note: Weights re-normalized out of 100 since Sentiment (10-15%) was removed.
-    
-    # Short Term: Quality 23.5%, Valuation 23.5%, Momentum 53.0%
+    # Sentiment is only included when real signals were present (signals_used > 0).
+    # When absent, its weight is redistributed proportionally to the other three
+    # components — same renormalization pattern used for Quality/Valuation above.
+
+    if "sentiment_score" not in df.columns:
+        df["sentiment_score"] = 0.0
+    if "sentiment_signals" not in df.columns:
+        df["sentiment_signals"] = 0
+
+    has_sentiment = df["sentiment_signals"] > 0
+
+    # Short Term base weights: Quality 20%, Valuation 20%, Momentum 45%, Sentiment 15%
+    # When sentiment absent → redistribute 15% proportionally: Q=23.5%, V=23.5%, M=53%
     df["composite_short"] = (
-        (df["quality_score"].fillna(0) * 0.235) + 
-        (df["valuation_score"].fillna(0) * 0.235) + 
-        (df["momentum_score_short"].fillna(0) * 0.530)
+        df.apply(lambda r: (
+            r["quality_score"] * 0.20 +
+            r["valuation_score"] * 0.20 +
+            r["momentum_score_short"] * 0.45 +
+            r["sentiment_score"] * 0.15
+        ) if r["sentiment_signals"] > 0 else (
+            r["quality_score"] * 0.235 +
+            r["valuation_score"] * 0.235 +
+            r["momentum_score_short"] * 0.530
+        ), axis=1)
     )
-    
-    # Mid Term: Quality 44.4%, Valuation 33.3%, Momentum 22.2%
+
+    # Mid Term base weights: Quality 40%, Valuation 30%, Momentum 20%, Sentiment 10%
+    # When sentiment absent → redistribute 10%: Q=44.4%, V=33.3%, M=22.2%
     df["composite_mid"] = (
-        (df["quality_score"].fillna(0) * 0.444) + 
-        (df["valuation_score"].fillna(0) * 0.333) + 
-        (df["momentum_score_mid"].fillna(0) * 0.222)
+        df.apply(lambda r: (
+            r["quality_score"] * 0.40 +
+            r["valuation_score"] * 0.30 +
+            r["momentum_score_mid"] * 0.20 +
+            r["sentiment_score"] * 0.10
+        ) if r["sentiment_signals"] > 0 else (
+            r["quality_score"] * 0.444 +
+            r["valuation_score"] * 0.333 +
+            r["momentum_score_mid"] * 0.222
+        ), axis=1)
     )
-    
-    # Long Term: Quality 55.5%, Valuation 33.3%, Momentum 11.1%
+
+    # Long Term: Quality 55.5%, Valuation 33.3%, Momentum 11.1% — unchanged
     df["composite_long"] = (
-        (df["quality_score"].fillna(0) * 0.555) + 
-        (df["valuation_score"].fillna(0) * 0.333) + 
+        (df["quality_score"].fillna(0) * 0.555) +
+        (df["valuation_score"].fillna(0) * 0.333) +
         (df["momentum_score_long"].fillna(0) * 0.111)
     )
 
     return df
+
