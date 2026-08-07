@@ -2,7 +2,7 @@ import sys
 import time
 import pandas as pd
 from typing import List, Dict
-
+import concurrent.futures
 from market_service.app.market.instrument_mapper import InstrumentMapper
 from market_service.app.market.fetch_all_surveillance import DailySurveillanceFetcher
 from market_service.app.market.hard_filters import check_hard_filters, HardFilterResult
@@ -23,9 +23,9 @@ from market_service.app.stock_recommend.build_scoring_input import (
     build_scoring_input
 )
 
-# Polite delay between Upstox API calls — same value used in phase0_validate.py
-# Keeps us well under rate-limit thresholds (~500 requests per run).
-REQUEST_DELAY_SECONDS = 2.0
+# Polite delay between Upstox API calls — lowered for multi-threading
+# Keeps us well under rate-limit thresholds (25 req/sec).
+REQUEST_DELAY_SECONDS = 0.5
 
 def run_stock_recommendation_pipeline():
     print("=" * 60)
@@ -35,10 +35,6 @@ def run_stock_recommendation_pipeline():
     import os
     from datetime import datetime
     base_dir = os.path.dirname(__file__)
-    cache_dir = os.path.join(base_dir, "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    cache_file = os.path.join(cache_dir, f"momentum_cache_{today_str}.json")
 
     # -------------------------------------------------------------------------
     # STAGE 1: Load Universe
@@ -152,6 +148,65 @@ def run_stock_recommendation_pipeline():
 
     client = UpstoxClient()
 
+    def _process_momentum_candidate(row: dict, i: int, total: int, exchange_label: str) -> tuple:
+        sym = row["composite_symbol"]
+        if i % 50 == 0 or i == 1:
+            print(f"  [{exchange_label}] {i}/{total} — last: {sym}")
+
+        df_ohlc = None
+        for attempt in range(3):
+            try:
+                df_ohlc = client.fetch_ohlc(sym, days=180)
+                break  # success
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(REQUEST_DELAY_SECONDS * 2)  # wait a bit longer before retry
+                else:
+                    print(f"  [warn] Upstox fetch failed for {sym} after 3 attempts: {e}", file=sys.stderr)
+                    time.sleep(REQUEST_DELAY_SECONDS)
+                    return (i, None, "api_error")
+
+        if df_ohlc.empty or len(df_ohlc) < 50:
+            print(f"  [warn] insufficient price history for {sym} ({len(df_ohlc)} rows) — skipping", file=sys.stderr)
+            time.sleep(REQUEST_DELAY_SECONDS)
+            return (i, None, "insufficient_history")
+
+        current_price = float(df_ohlc["close"].iloc[-1])
+        eps = row.get("eps")
+        if eps is None or str(eps).strip() == "" or float(eps) <= 0:
+            row["realtime_pe"] = None
+        else:
+            row["realtime_pe"] = round(current_price / float(eps), 2)
+
+        horizon_scores = {}
+        for horizon in ["short", "mid", "long"]:
+            if horizon == "long" and len(df_ohlc) < 200:
+                horizon_scores[horizon] = {"score": None, "is_liquid": False, "ai_signal": "insufficient_data"}
+                continue
+            if horizon == "mid" and len(df_ohlc) < 50:
+                horizon_scores[horizon] = {"score": None, "is_liquid": False, "ai_signal": "insufficient_data"}
+                continue
+            try:
+                result = compute_horizon_signal_matrix(sym, df_ohlc, horizon=horizon)
+                horizon_scores[horizon] = {
+                    "score": float(result["score"]),
+                    "is_liquid": bool(result["is_liquid"]),
+                    "ai_signal": result["ai_signal"],
+                }
+            except Exception as e:
+                print(f"  [warn] signal_engine failed for {sym} [{horizon}]: {e}", file=sys.stderr)
+                horizon_scores[horizon] = {"score": None, "is_liquid": False, "ai_signal": "error"}
+
+        row["momentum_raw_short"] = horizon_scores["short"]["score"]
+        row["momentum_raw_mid"]   = horizon_scores["mid"]["score"]
+        row["momentum_raw_long"]  = horizon_scores["long"]["score"]
+        row["is_liquid_short"]    = horizon_scores["short"]["is_liquid"]
+        row["is_liquid_mid"]      = horizon_scores["mid"]["is_liquid"]
+        row["is_liquid_long"]     = horizon_scores["long"]["is_liquid"]
+
+        time.sleep(REQUEST_DELAY_SECONDS)
+        return (i, row, "success")
+
     def _fetch_momentum(candidates: list, exchange_label: str) -> list:
         """
         For each candidate that passed hard filters, fetch 180 days of OHLC
@@ -160,83 +215,28 @@ def run_stock_recommendation_pipeline():
         Rows are still kept even if some horizons are illiquid — the per-horizon
         liquidity flag is what controls inclusion at Stage 7 rank time.
         """
-        enriched = []
+        enriched_results = []
         total = len(candidates)
         api_errors = 0
         insufficient_history = 0
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [
+                executor.submit(_process_momentum_candidate, row, i, total, exchange_label)
+                for i, row in enumerate(candidates, 1)
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                i, row, status = future.result()
+                if status == "success":
+                    enriched_results.append((i, row))
+                elif status == "api_error":
+                    api_errors += 1
+                elif status == "insufficient_history":
+                    insufficient_history += 1
 
-        for i, row in enumerate(candidates, 1):
-            sym = row["composite_symbol"]  # e.g. "NSE:RELIANCE" or "BSE:RELIANCE"
-
-            if i % 50 == 0 or i == 1:
-                print(f"  [{exchange_label}] {i}/{total} — last: {sym}")
-
-            # ── Fetch OHLC (same as phase0_validate.py: days=180, which
-            #    internally fetches 360 calendar days to get ~250 trading days,
-            #    enough for SMA200 in the 'long' horizon weight profile)
-            try:
-                df_ohlc = client.fetch_ohlc(sym, days=180)
-            except Exception as e:
-                print(f"  [warn] Upstox fetch failed for {sym}: {e}", file=sys.stderr)
-                api_errors += 1
-                time.sleep(REQUEST_DELAY_SECONDS)
-                continue  # Skip this stock entirely — no OHLC data
-
-            # Require at least 50 trading-day rows (enough for short/mid term SMA50/EMA20).
-            # If it has <200 rows, long-term SMA200 will naturally evaluate to NaN,
-            # and the signal engine is already designed to gracefully ignore missing 
-            # indicators and re-normalize the remaining weights!
-            if df_ohlc.empty or len(df_ohlc) < 50:
-                print(f"  [warn] insufficient price history for {sym} ({len(df_ohlc)} rows) — skipping", file=sys.stderr)
-                insufficient_history += 1
-                time.sleep(REQUEST_DELAY_SECONDS)
-                continue
-
-            # ── Calculate Real-Time P/E ────────────────────────────────────────
-            current_price = float(df_ohlc["close"].iloc[-1])
-            eps = row.get("eps")
-            if eps is None or str(eps).strip() == "" or float(eps) <= 0:
-                row["realtime_pe"] = None   # missing EPS → excluded from valuation scoring
-            else:
-                row["realtime_pe"] = round(current_price / float(eps), 2)
-
-
-            # ── Compute all 3 horizons — same loop as phase0_validate.py ──────
-            horizon_scores = {}
-            for horizon in ["short", "mid", "long"]:
-                # STRICT HORIZON GUARD: Do not allow a young stock to receive a 
-                # long-term score purely by renormalizing its short-term indicators. 
-                # If it doesn't have 200 days of history, it CANNOT have a long-term trend.
-                if horizon == "long" and len(df_ohlc) < 200:
-                    horizon_scores[horizon] = {"score": None, "is_liquid": False, "ai_signal": "insufficient_data"}
-                    continue
-                if horizon == "mid" and len(df_ohlc) < 50:
-                    horizon_scores[horizon] = {"score": None, "is_liquid": False, "ai_signal": "insufficient_data"}
-                    continue
-
-                try:
-                    result = compute_horizon_signal_matrix(sym, df_ohlc, horizon=horizon)
-                    horizon_scores[horizon] = {
-                        "score": float(result["score"]),
-                        "is_liquid": bool(result["is_liquid"]),
-                        "ai_signal": result["ai_signal"],
-                    }
-                except Exception as e:
-                    print(f"  [warn] signal_engine failed for {sym} [{horizon}]: {e}", file=sys.stderr)
-                    horizon_scores[horizon] = {"score": None, "is_liquid": False, "ai_signal": "error"}
-
-            # ── Stamp momentum fields onto the row (same field names as phase0) ─
-            row["momentum_raw_short"] = horizon_scores["short"]["score"]
-            row["momentum_raw_mid"]   = horizon_scores["mid"]["score"]
-            row["momentum_raw_long"]  = horizon_scores["long"]["score"]
-            row["is_liquid_short"]    = horizon_scores["short"]["is_liquid"]
-            row["is_liquid_mid"]      = horizon_scores["mid"]["is_liquid"]
-            row["is_liquid_long"]     = horizon_scores["long"]["is_liquid"]
-
-            enriched.append(row)
-
-            # Polite delay — same as phase0_validate.py (2.0s)
-            time.sleep(REQUEST_DELAY_SECONDS)
+        # Sort by original index 'i' to preserve exact original logic order
+        enriched_results.sort(key=lambda x: x[0])
+        enriched = [r[1] for r in enriched_results]
 
         print(f"  [{exchange_label}] Done. Enriched: {len(enriched)}/{total} "
               f"(api_errors={api_errors}, insufficient_history={insufficient_history})")
@@ -257,11 +257,6 @@ def run_stock_recommendation_pipeline():
     print("\n=== Stage 5 Complete! ===")
     print(f"  NSE survivors with momentum: {len(nse_momentum)}")
     print(f"  BSE survivors with momentum: {len(bse_momentum)}")
-
-    # Save to local cache for fast reruns on the same day
-    print(f"  Saving to cache: {cache_file}")
-    with open(cache_file, "w") as f:
-        json.dump({"nse_momentum": nse_momentum, "bse_momentum": bse_momentum}, f)
 
     # -------------------------------------------------------------------------
     # STAGE 6a: Compute Initial Composite Scores (No Sentiment)
@@ -324,11 +319,10 @@ def run_stock_recommendation_pipeline():
         df["sentiment_news"] = "N/A"
         df["sentiment_signals"] = 0
         
-        for idx, row in df.iterrows():
+        def _process_sentiment_row(idx, row):
             sym = row["composite_symbol"]
             if sym not in shortlist:
-                continue
-
+                return None
             try:
                 underlying = sym.split(":", 1)[1] if ":" in sym else sym
                 news_score = news_scores.get(sym)
@@ -341,17 +335,30 @@ def run_stock_recommendation_pipeline():
                     oi_cache=oi_cache,
                     underlying=underlying,
                 )
-                df.at[idx, "sentiment_score"] = sentiment["score"]
-                df.at[idx, "sentiment_fii_dii"] = sentiment["fii_dii"]
-                df.at[idx, "sentiment_oi_trend"] = sentiment["oi_trend"]
-                df.at[idx, "sentiment_news"] = sentiment["news"]
-                df.at[idx, "sentiment_signals"] = sentiment["signals_used"]
+                time.sleep(REQUEST_DELAY_SECONDS)
+                return (idx, sentiment)
             except Exception as e:
                 print(f"  [warn] sentiment failed for {sym}: {e}")
-                sentiment_errors += 1
-            
-            # Polite delay only when making Upstox OI calls
-            time.sleep(REQUEST_DELAY_SECONDS)
+                time.sleep(REQUEST_DELAY_SECONDS)
+                return (idx, None)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [
+                executor.submit(_process_sentiment_row, idx, row)
+                for idx, row in df.iterrows()
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    idx, sentiment = result
+                    if sentiment is None:
+                        sentiment_errors += 1
+                    else:
+                        df.at[idx, "sentiment_score"] = sentiment["score"]
+                        df.at[idx, "sentiment_fii_dii"] = sentiment["fii_dii"]
+                        df.at[idx, "sentiment_oi_trend"] = sentiment["oi_trend"]
+                        df.at[idx, "sentiment_news"] = sentiment["news"]
+                        df.at[idx, "sentiment_signals"] = sentiment["signals_used"]
         
         return df
 
