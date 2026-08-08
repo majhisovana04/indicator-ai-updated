@@ -18,62 +18,115 @@ from core_shared.logging_setup import logger
 from fastapi.middleware.cors import CORSMiddleware
 
 
-def fetch_frequent_sync(state_cache):
-    try:
-        r = get_redis()
-        if r:
-            sm_raw = r.get("signal_matrix:nifty50")
-            if sm_raw: state_cache["signal_matrix"] = json.loads(sm_raw)
-            
-            mp_raw = r.get("market_pulse:nifty50")
-            if mp_raw: state_cache["market_pulse"] = json.loads(mp_raw)
-    except Exception as e:
-        print(f"[Cache Poller] Error polling frequent data: {e}")
+# --- OLD BACKGROUND POLLING (Commented out per user request) ---
+# def fetch_frequent_sync(state_cache):
+#     try:
+#         r = get_redis()
+#         if r:
+#             sm_raw = r.get("signal_matrix:nifty50")
+#             if sm_raw: state_cache["signal_matrix"] = json.loads(sm_raw)
+#             
+#             mp_raw = r.get("market_pulse:nifty50")
+#             if mp_raw: state_cache["market_pulse"] = json.loads(mp_raw)
+#     except Exception as e:
+#         print(f"[Cache Poller] Error polling frequent data: {e}")
+# 
+# def fetch_infrequent_sync(state_cache):
+#     try:
+#         r = get_redis()
+#         if r:
+#             nse_raw = r.get("rankings:NSE")
+#             if nse_raw: state_cache["rankings_NSE"] = json.loads(nse_raw)
+#             
+#             bse_raw = r.get("rankings:BSE")
+#             if bse_raw: state_cache["rankings_BSE"] = json.loads(bse_raw)
+#     except Exception as e:
+#         print(f"[Cache Poller] Error polling infrequent data: {e}")
+# 
+# async def poll_frequent(state_cache):
+#     while True:
+#         await asyncio.to_thread(fetch_frequent_sync, state_cache)
+#         await asyncio.sleep(300) # 5 minutes
+# 
+# async def poll_infrequent(state_cache):
+#     while True:
+#         await asyncio.to_thread(fetch_infrequent_sync, state_cache)
+#         await asyncio.sleep(3600) # 1 hour
+# 
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     # Initialize the global cache
+#     app.state.cache = {
+#         "signal_matrix": None,
+#         "market_pulse": None,
+#         "rankings_NSE": None,
+#         "rankings_BSE": None
+#     }
+#     
+#     # Start background polling tasks
+#     task1 = asyncio.create_task(poll_frequent(app.state.cache))
+#     task2 = asyncio.create_task(poll_infrequent(app.state.cache))
+#     
+#     yield
+#     
+#     # Clean up on shutdown
+#     task1.cancel()
+#     task2.cancel()
+# ----------------------------------------------------------------
 
-def fetch_infrequent_sync(state_cache):
-    try:
-        r = get_redis()
-        if r:
-            nse_raw = r.get("rankings:NSE")
-            if nse_raw: state_cache["rankings_NSE"] = json.loads(nse_raw)
-            
-            bse_raw = r.get("rankings:BSE")
-            if bse_raw: state_cache["rankings_BSE"] = json.loads(bse_raw)
-    except Exception as e:
-        print(f"[Cache Poller] Error polling infrequent data: {e}")
+import threading
 
-async def poll_frequent(state_cache):
-    while True:
-        await asyncio.to_thread(fetch_frequent_sync, state_cache)
-        await asyncio.sleep(300) # 5 minutes
+class TTLCache:
+    """
+    Minimal thread-safe cache: serves from memory if fresh, otherwise
+    fetches once and updates. Correct under 1 process or 100.
+    """
+    def __init__(self, fetch_fn, ttl_seconds: float):
+        self._fetch_fn = fetch_fn
+        self._ttl = ttl_seconds
+        self._value = None
+        self._fetched_at = 0.0
+        self._lock = threading.Lock()
 
-async def poll_infrequent(state_cache):
-    while True:
-        await asyncio.to_thread(fetch_infrequent_sync, state_cache)
-        await asyncio.sleep(3600) # 1 hour
+    def get(self):
+        now = time.monotonic()
+        if self._value is not None and (now - self._fetched_at) < self._ttl:
+            return self._value
+        with self._lock:
+            now = time.monotonic()
+            if self._value is None or (now - self._fetched_at) >= self._ttl:
+                self._value = self._fetch_fn()
+                self._fetched_at = now
+        return self._value
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Initialize the global cache
-    app.state.cache = {
-        "signal_matrix": None,
-        "market_pulse": None,
-        "rankings_NSE": None,
-        "rankings_BSE": None
-    }
-    
-    # Start background polling tasks
-    task1 = asyncio.create_task(poll_frequent(app.state.cache))
-    task2 = asyncio.create_task(poll_infrequent(app.state.cache))
-    
-    yield
-    
-    # Clean up on shutdown
-    task1.cancel()
-    task2.cancel()
+def _fetch_rankings(exchange: str):
+    r = get_redis()
+    if r:
+        raw = r.get(f"rankings:{exchange}")
+        return json.loads(raw) if raw else None
+    return None
+
+def _fetch_signal_matrix():
+    r = get_redis()
+    if r:
+        raw = r.get("signal_matrix:nifty50")
+        return json.loads(raw) if raw else None
+    return None
+
+def _fetch_market_pulse():
+    r = get_redis()
+    if r:
+        raw = r.get("market_pulse:nifty50")
+        return json.loads(raw) if raw else None
+    return None
+
+rankings_nse_cache = TTLCache(lambda: _fetch_rankings("NSE"), ttl_seconds=300)
+rankings_bse_cache = TTLCache(lambda: _fetch_rankings("BSE"), ttl_seconds=300)
+signal_matrix_cache = TTLCache(lambda: _fetch_signal_matrix(), ttl_seconds=300)
+market_pulse_cache = TTLCache(lambda: _fetch_market_pulse(), ttl_seconds=300)
 
 
-app = FastAPI(title="Indicator AI Assistant", lifespan=lifespan)
+app = FastAPI(title="Indicator AI Assistant")
 
 # Security scheme — enables the 🔓 Authorize button in Swagger UI
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -125,7 +178,7 @@ def signal_matrix(
 ):
     _verify_auth(credentials, authorization)
 
-    all_entries = request.app.state.cache["signal_matrix"]
+    all_entries = signal_matrix_cache.get()
     if not all_entries:
         return empty_cache_response()
 
@@ -153,7 +206,7 @@ def market_pulse(
 ):
     _verify_auth(credentials, authorization)
 
-    pulse_data = request.app.state.cache["market_pulse"]
+    pulse_data = market_pulse_cache.get()
     if not pulse_data:
         return empty_cache_response()
 
@@ -177,7 +230,8 @@ def get_rankings(
 
     _verify_auth(credentials, authorization)
 
-    rankings_data = request.app.state.cache.get(f"rankings_{exchange}")
+    cache = rankings_nse_cache if exchange == "NSE" else rankings_bse_cache
+    rankings_data = cache.get()
     if not rankings_data:
         return empty_cache_response()
 
